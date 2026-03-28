@@ -26,14 +26,20 @@ Customize.BatchSize         = 10
 Customize.BatchPauseWait    = 2000          -- ms
 Customize.GCInterval        = 20
 
--- Green Screen
+-- Chroma Key Screen
+Customize.ChromaKeyColor    = 'magenta'          -- 'green' | 'magenta'
+
 Customize.GreenScreen = {
-    color       = { r = 0, g = 177, b = 64 },
     width       = 5.0,
     depth       = 5.0,
     height      = 3.5,
     floorOffset = -1.0,
 }
+
+-- Auto-set screen color from preset (do not edit manually)
+Customize.GreenScreen.color = Customize.ChromaKeyColor == 'magenta'
+    and { r = 255, g = 0, b = 255 }
+    or  { r = 0,   g = 177, b = 64 }
 
 -- Studio Lights
 Customize.StudioLights = {

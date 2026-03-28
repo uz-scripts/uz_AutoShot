@@ -57,8 +57,8 @@ All settings are in `Customize.lua`:
 | `Customize.MenuCommand` | `'wardrobe'` | Browser command name |
 | `Customize.ScreenshotFormat` | `'png'` | Output format (`png` / `webp` / `jpg`) |
 | `Customize.TransparentBg` | `true` | Enable green screen removal (PNG only) |
-| `Customize.ScreenshotWidth` | `512` | Capture resolution width |
-| `Customize.ScreenshotHeight` | `512` | Capture resolution height |
+| `Customize.ScreenshotWidth` | `512` | Output image width (server-side resize, PNG only) |
+| `Customize.ScreenshotHeight` | `512` | Output image height (server-side resize, PNG only) |
 | `Customize.CaptureAllTextures` | `false` | Capture all texture variants (not just default) |
 | `Customize.BatchSize` | `10` | Captures before each batch pause |
 

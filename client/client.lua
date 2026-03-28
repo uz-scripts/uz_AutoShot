@@ -128,6 +128,43 @@ local function DrawGreenScreenAndLights(ped)
     end
 end
 
+-- CROP OVERLAY (preview only — shows what area will be in the final image)
+
+local cropBars = nil
+
+local function ComputeCropBars()
+    local tw = Customize.ScreenshotWidth or 0
+    local th = Customize.ScreenshotHeight or 0
+    if tw <= 0 or th <= 0 then cropBars = false return end
+
+    local sw, sh = GetActiveScreenResolution()
+    local screenAspect = sw / sh
+    local targetAspect = tw / th
+
+    if screenAspect > targetAspect then
+        local barW = (1.0 - targetAspect / screenAspect) / 2.0
+        cropBars = { mode = 'v', x1 = barW / 2.0, x2 = 1.0 - barW / 2.0, size = barW }
+    elseif screenAspect < targetAspect then
+        local barH = (1.0 - screenAspect / targetAspect) / 2.0
+        cropBars = { mode = 'h', y1 = barH / 2.0, y2 = 1.0 - barH / 2.0, size = barH }
+    else
+        cropBars = false
+    end
+end
+
+local function DrawCropOverlay()
+    if cropBars == nil then ComputeCropBars() end
+    if not cropBars then return end
+
+    if cropBars.mode == 'v' then
+        DrawRect(cropBars.x1, 0.5, cropBars.size, 1.0, 0, 0, 0, 150)
+        DrawRect(cropBars.x2, 0.5, cropBars.size, 1.0, 0, 0, 0, 150)
+    else
+        DrawRect(0.5, cropBars.y1, 1.0, cropBars.size, 0, 0, 0, 150)
+        DrawRect(0.5, cropBars.y2, 1.0, cropBars.size, 0, 0, 0, 150)
+    end
+end
+
 -- ORBIT CAMERA
 
 local orbitCam      = nil
@@ -258,6 +295,9 @@ local function CaptureAndUpload(filename)
             ['X-Filename']    = filename,
             ['X-Format']      = Customize.ScreenshotFormat or 'png',
             ['X-Transparent'] = Customize.TransparentBg and '1' or '0',
+            ['X-ChromaKey']   = Customize.ChromaKeyColor or 'green',
+            ['X-Width']       = tostring(Customize.ScreenshotWidth or 0),
+            ['X-Height']      = tostring(Customize.ScreenshotHeight or 0),
         },
     }
     if encoding ~= 'png' then
@@ -736,6 +776,7 @@ CreateThread(function()
             SuppressWorld()
             ClearPedTasksImmediately(ped)
             if Customize.TransparentBg then DrawGreenScreenAndLights(ped) end
+            if isPreview and not isCapturing then DrawCropOverlay() end
         end
         Wait(active and 0 or 1000)
     end
