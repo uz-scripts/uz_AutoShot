@@ -965,13 +965,13 @@ RegisterCommand(Customize.MenuCommand, function() OpenClothingMenu() end, false)
 
 exports('getPhotoURL', function(gender, itemType, id, drawable, texture)
     local prefix = itemType == 'prop' and 'prop_' or ''
-    return ('http://127.0.0.1:3959/shots/%s/%s%d/%d_%d.%s'):format(
+    return ('https://cfx-nui-uz_AutoShot/shots/%s/%s%d/%d_%d.%s'):format(
         gender, prefix, id, drawable, texture, Customize.ScreenshotFormat
     )
 end)
 
 exports('getShotsBaseURL', function()
-    return 'http://127.0.0.1:3959/shots'
+    return 'https://cfx-nui-uz_AutoShot/shots'
 end)
 
 exports('getManifestURL', function(gender, itemType, id)
@@ -988,6 +988,8 @@ end)
 exports('getServerPort', function()
     return 3959
 end)
+-- Note: Photo URLs now use cfx-nui protocol (getPhotoURL/getShotsBaseURL)
+-- The server port is only relevant for API endpoints (manifest, upload)
 
 -- INPUT THREAD
 

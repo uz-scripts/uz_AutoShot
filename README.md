@@ -8,7 +8,7 @@ Automatic clothing thumbnail generator & browser for FiveM. Captures every drawa
 
 1. **`/shotmaker`** — Opens a capture studio: your ped teleports to an underground void with green screen walls and studio lighting. Select categories, adjust the orbit camera, then hit start.
 2. **Automatic capture** — The script iterates through every drawable variation, applies it to the ped, waits for textures to stream, and takes a screenshot. Server-side chroma key removes the green background.
-3. **`/wardrobe`** — Opens a visual clothing browser. Thumbnails are served via a local HTTP API — other scripts (clothing menus, shops) can consume the same photos with zero file duplication.
+3. **`/wardrobe`** — Opens a visual clothing browser. Thumbnails are served via FiveM's native `cfx-nui` protocol — no external HTTP server needed for image delivery.
 
 ## Features
 
@@ -19,8 +19,8 @@ Automatic clothing thumbnail generator & browser for FiveM. Captures every drawa
 - **Clothing Browser** — Dual-panel HUD with categories and virtualized thumbnail grid
 - **Re-capture Mode** — Select broken thumbnails and re-capture only those
 - **Pause / Resume** — Pause long capture sessions and resume where you left off
-- **HTTP API** — REST API with manifest, per-category filtering, and direct image serving
-- **Lua Exports** — Client-side exports for other scripts to consume photos without file duplication
+- **HTTP API** — REST API with manifest, per-category filtering, and existence checks
+- **Lua Exports** — Client-side exports for other scripts to consume photos via `cfx-nui` protocol
 - **Zero Native Dependencies** — Only `pngjs` (pure JS) — no sharp, canvas, or native compilation
 
 ## Dependencies
@@ -74,26 +74,25 @@ Camera presets, green screen dimensions, studio lighting, and categories are all
 | `GET /api/manifest/:gender/:type/:id` | Filter by category |
 | `GET /api/exists?gender=&type=&id=&drawable=&texture=` | Check if photo exists |
 | `GET /api/stats` | Count summary |
-| `GET /shots/...` | Direct image serving |
+| `POST /upload` | Screenshot upload with chroma key processing |
 
 ### Lua Exports
 
 ```lua
 exports['uz_AutoShot']:getPhotoURL('male', 'component', 11, 5, 0)
-exports['uz_AutoShot']:getManifestURL('male', 'component', 11)
+-- → 'https://cfx-nui-uz_AutoShot/shots/male/11/5_0.png'
+
 exports['uz_AutoShot']:getShotsBaseURL()
+-- → 'https://cfx-nui-uz_AutoShot/shots'
+
+exports['uz_AutoShot']:getManifestURL('male', 'component', 11)
+-- → 'http://127.0.0.1:3959/api/manifest/male/component/11'
+
 exports['uz_AutoShot']:getPhotoFormat()
-exports['uz_AutoShot']:getServerPort()
+-- → 'png'
 ```
 
-### NUI / React Integration
-
-Fetch directly from JavaScript — no Lua proxy needed:
-
-```js
-const res = await fetch('http://127.0.0.1:3959/api/manifest/male/component/11')
-const { items } = await res.json()
-```
+> **Note:** Photo URLs use FiveM's `cfx-nui` protocol — no port forwarding or public HTTP server needed. After generating new photos, restart the resource (`ensure uz_AutoShot`) so FiveM indexes the new files.
 
 Full API reference and integration examples: [uz-scripts.com/docs/uz-autoshot](https://uz-scripts.com/docs/free/uz-autoshot)
 

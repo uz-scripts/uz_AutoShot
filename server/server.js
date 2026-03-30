@@ -36,7 +36,7 @@ function buildItems() {
                     const catId     = isProp ? parseInt(catPart.replace('prop_', '')) : parseInt(catPart);
                     const drawParts = drawPart.split('_');
                     items.push({
-                        url:      'http://127.0.0.1:' + PORT + '/shots/' + entryRel,
+                        url:      'https://cfx-nui-' + RESOURCE + '/shots/' + entryRel,
                         file:     entryRel,
                         gender:   gender,
                         type:     isProp ? 'prop' : 'component',
@@ -389,34 +389,6 @@ const server = http.createServer((req, res) => {
 
         res.writeHead(404);
         res.end(JSON.stringify({ error: 'Unknown API route' }));
-        return;
-    }
-
-    if (req.method === 'GET' && req.url.startsWith('/shots/')) {
-        const relPath = decodeURIComponent(req.url.split('?')[0].replace('/shots/', ''));
-        const filePath = path.join(OUTPUT_DIR, relPath);
-
-        if (!filePath.startsWith(OUTPUT_DIR)) {
-            res.writeHead(403);
-            res.end();
-            return;
-        }
-
-        if (!fs.existsSync(filePath)) {
-            res.writeHead(404);
-            res.end();
-            return;
-        }
-
-        const ext = path.extname(filePath).toLowerCase();
-        const mimeMap = { '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg' };
-        const mime = mimeMap[ext] || 'application/octet-stream';
-
-        res.writeHead(200, {
-            'Content-Type': mime,
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-        });
-        res.end(fs.readFileSync(filePath));
         return;
     }
 
