@@ -239,14 +239,26 @@ function resizePNG(pngBuffer, targetW, targetH) {
 }
 
 const MAX_PAYLOAD_BYTES = 20 * 1024 * 1024;
+const defer = typeof setImmediate === 'function' ? setImmediate : (fn) => setTimeout(fn, 0);
 
-onNet('uz_autoshot:server:processCapture', (payload) => {
-    const src = source;
+function notifyCaptureResult(src, requestId, ok, message) {
+    if (requestId) {
+        emitNet('uz_autoshot:client:captureProcessed', src, requestId, ok === true, message || '');
+    }
+}
+
+function processCapture(src, payload) {
+    const requestId = payload && typeof payload.requestId === 'string' ? payload.requestId : '';
+
     if (!checkAce(src)) {
         console.log('^1[uz_AutoShot]^0 Refused capture: player ' + src + ' lacks ' + ACE_NAME);
+        notifyCaptureResult(src, requestId, false, 'missing permission');
         return;
     }
-    if (!payload || typeof payload !== 'object') return;
+    if (!payload || typeof payload !== 'object') {
+        notifyCaptureResult(src, requestId, false, 'invalid payload');
+        return;
+    }
 
     const xFilename  = typeof payload.filename === 'string' ? payload.filename : '';
     const wantFormat = typeof payload.format === 'string' ? payload.format.toLowerCase() : 'png';
@@ -258,14 +270,17 @@ onNet('uz_autoshot:server:processCapture', (payload) => {
 
     if (!xFilename || /[\\/]\.\.(?:[\\/]|$)/.test(xFilename) || path.isAbsolute(xFilename)) {
         console.log('^1[uz_AutoShot]^0 Refused capture: invalid filename: ' + xFilename);
+        notifyCaptureResult(src, requestId, false, 'invalid filename');
         return;
     }
     if (typeof imageData !== 'string' || imageData.length === 0) {
         console.log('^1[uz_AutoShot]^0 Refused capture: empty image data for ' + xFilename);
+        notifyCaptureResult(src, requestId, false, 'empty image data');
         return;
     }
     if (imageData.length > Math.ceil(MAX_PAYLOAD_BYTES * 4 / 3) + 64) {
         console.log('^1[uz_AutoShot]^0 Refused capture: payload too large for ' + xFilename);
+        notifyCaptureResult(src, requestId, false, 'payload too large');
         return;
     }
 
@@ -273,6 +288,7 @@ onNet('uz_autoshot:server:processCapture', (payload) => {
         let outputData = Buffer.from(stripDataUri(imageData), 'base64');
         if (!outputData || outputData.length === 0) {
             console.log('^1[uz_AutoShot]^0 Refused capture: invalid base64 for ' + xFilename);
+            notifyCaptureResult(src, requestId, false, 'invalid base64');
             return;
         }
 
@@ -303,6 +319,7 @@ onNet('uz_autoshot:server:processCapture', (payload) => {
         const outputPath = path.resolve(path.join(OUTPUT_DIR, xFilename + '.' + ext));
         if (!outputPath.startsWith(OUTPUT_DIR + path.sep)) {
             console.log('^1[uz_AutoShot]^0 Refused capture: path traversal blocked for ' + xFilename);
+            notifyCaptureResult(src, requestId, false, 'path traversal blocked');
             return;
         }
 
@@ -313,9 +330,17 @@ onNet('uz_autoshot:server:processCapture', (payload) => {
         const sizeKB = Math.round(outputData.length / 1024);
         const label = wantTransp ? 'bg removed' : ext;
         console.log('^2[uz_AutoShot]^0 Saved: ' + xFilename + '.' + ext + ' (' + sizeKB + ' KB, ' + label + ')');
+        notifyCaptureResult(src, requestId, true, '');
     } catch (err) {
-        console.log('^1[uz_AutoShot]^0 Process error: ' + (err && err.message ? err.message : err));
+        const message = err && err.message ? err.message : String(err);
+        console.log('^1[uz_AutoShot]^0 Process error: ' + message);
+        notifyCaptureResult(src, requestId, false, message);
     }
+}
+
+onNet('uz_autoshot:server:processCapture', (payload) => {
+    const src = source;
+    defer(() => processCapture(src, payload));
 });
 
 onNet('uz_autoshot:server:setBucket', (bucket) => {
@@ -337,4 +362,3 @@ onNet('uz_autoshot:server:resetBucket', () => {
     SetPlayerRoutingBucket(src.toString(), 0);
     console.log('^2[uz_AutoShot]^0 Player ' + src + ' -> bucket 0');
 });
-

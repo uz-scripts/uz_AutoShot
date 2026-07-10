@@ -18,6 +18,8 @@ Customize.StudioHeading     = 180.0
 Customize.WaitAfterApply    = 500           -- ms
 Customize.WaitAfterCapture  = 300           -- ms
 Customize.TextureLoadWait   = 600           -- ms
+Customize.ScreenshotTimeout = 15000         -- ms to wait for screenshot-basic before skipping a shot
+Customize.UploadAckTimeout  = 45000         -- ms to wait for the server to save/process each shot
 Customize.CaptureAllTextures = false        -- true = all textures, false = texture 0 only
 
 -- Batch / Performance
