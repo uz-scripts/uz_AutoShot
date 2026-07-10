@@ -141,6 +141,8 @@ All settings live in [`Customize.lua`](Customize.lua). Common knobs:
 | `Customize.TransparentBg` | `true` | Chroma key removal (PNG only) |
 | `Customize.ScreenshotWidth` | `512` | Output image width |
 | `Customize.ScreenshotHeight` | `512` | Output image height |
+| `Customize.ScreenshotTimeout` | `15000` | Milliseconds to wait for `screenshot-basic` before skipping a shot |
+| `Customize.UploadAckTimeout` | `45000` | Milliseconds to wait for server processing/save acknowledgement |
 | `Customize.CaptureAllTextures` | `false` | Capture all texture variants (not just default) |
 | `Customize.ChromaKeyColor` | `'magenta'` | Background color: `'green'` or `'magenta'` |
 | `Customize.BatchSize` | `10` | Captures per batch before cooldown |

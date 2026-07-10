@@ -12,6 +12,9 @@ local captureMode       = 'clothing'  -- 'clothing' | 'vehicle' | 'object'
 local spawnedEntity     = nil
 local vehicleColor      = { primary = 0, secondary = 0 }
 local entitySpawnToken  = 0  -- increments each spawn request to cancel stale ones
+local hideHeadActive    = false
+local captureUploadSeq  = 0
+local pendingCaptureUploads = {}
 
 -- Orbit-camera state. Declared up here so functions defined earlier in the
 -- file (CreateCaptureCamera, ...) can read the live orbit values that the
@@ -156,9 +159,9 @@ local function CreateCaptureCamera(entity, preset, presetName)
         -- Legacy preset without defaultAngleH: rotate ped to align with
         -- camera, then place camera behind ped's forward vector.
         local rotZ = preset.rotation.z + captureRotOffset
-        SetEntityRotation(ped, preset.rotation.x, preset.rotation.y, rotZ, 2, false)
+        SetEntityRotation(entity, preset.rotation.x, preset.rotation.y, rotZ, 2, false)
         Wait(50)
-        local fwd = GetEntityForwardVector(ped)
+        local fwd = GetEntityForwardVector(entity)
         local dist = preset.dist or 1.2
         camX  = pedPos.x - fwd.x * dist
         camY  = pedPos.y - fwd.y * dist
@@ -434,6 +437,15 @@ end
 -- CAPTURE & UPLOAD
 -- ════════════════════════════════════════════════════════
 
+RegisterNetEvent('uz_autoshot:client:captureProcessed', function(requestId, ok, message)
+    local pending = pendingCaptureUploads[requestId]
+    if not pending then return end
+
+    pending.done = true
+    pending.ok = ok == true
+    pending.message = message or ''
+end)
+
 local function CaptureAndUpload(filename)
     ForceHighQuality()
 
@@ -446,20 +458,40 @@ local function CaptureAndUpload(filename)
     end
 
     local done, base64 = false, nil
-    exports['screenshot-basic']:requestScreenshot(opts, function(data)
-        base64 = data
-        done = true
+    local screenshotOk, screenshotErr = pcall(function()
+        exports['screenshot-basic']:requestScreenshot(opts, function(data)
+            base64 = data
+            done = true
+        end)
     end)
 
-    local timeout = GetGameTimer() + 10000
-    while not done and GetGameTimer() < timeout do Wait(50) end
+    if not screenshotOk then
+        print('^1[uz_AutoShot]^0 Screenshot request failed (' .. filename .. '): ' .. tostring(screenshotErr))
+        return false
+    end
+
+    local timeout = GetGameTimer() + (Customize.ScreenshotTimeout or 15000)
+    while not done and GetGameTimer() < timeout and not isCancelled do Wait(50) end
+
+    if isCancelled then return false end
+
+    if not done then
+        print('^3[uz_AutoShot]^0 Capture timed out (' .. filename .. ')')
+        return false
+    end
 
     if not base64 or base64 == '' then
         print('^3[uz_AutoShot]^0 Capture skipped (' .. filename .. '): empty screenshot')
-        return
+        return false
     end
 
-    TriggerLatentServerEvent('uz_autoshot:server:processCapture', Customize.LatentRate or 8000000, {
+    captureUploadSeq = captureUploadSeq + 1
+    local requestId = ('%d:%d:%d'):format(GetPlayerServerId(PlayerId()), GetGameTimer(), captureUploadSeq)
+    local pending = { done = false, ok = false, message = '' }
+    pendingCaptureUploads[requestId] = pending
+
+    local sendOk, sendErr = pcall(TriggerLatentServerEvent, 'uz_autoshot:server:processCapture', Customize.LatentRate or 8000000, {
+        requestId   = requestId,
         filename    = filename,
         format      = Customize.ScreenshotFormat or 'png',
         transparent = Customize.TransparentBg and true or false,
@@ -468,6 +500,30 @@ local function CaptureAndUpload(filename)
         height      = Customize.ScreenshotHeight or 0,
         imageData   = base64,
     })
+
+    if not sendOk then
+        pendingCaptureUploads[requestId] = nil
+        print('^1[uz_AutoShot]^0 Upload send failed (' .. filename .. '): ' .. tostring(sendErr))
+        return false
+    end
+
+    local uploadTimeout = GetGameTimer() + (Customize.UploadAckTimeout or 45000)
+    while not pending.done and GetGameTimer() < uploadTimeout and not isCancelled do Wait(50) end
+    pendingCaptureUploads[requestId] = nil
+
+    if isCancelled then return false end
+
+    if not pending.done then
+        print('^3[uz_AutoShot]^0 Upload timed out (' .. filename .. ')')
+        return false
+    end
+
+    if not pending.ok then
+        print('^3[uz_AutoShot]^0 Upload failed (' .. filename .. '): ' .. (pending.message ~= '' and pending.message or 'server rejected capture'))
+        return false
+    end
+
+    return true
 end
 
 local function SendProgress(current, total, category)
@@ -1359,8 +1415,6 @@ end
 -- HEAD HIDE (chroma key mask)
 -- ════════════════════════════════════════════════════════
 
-local hideHeadActive = false
-
 local function DrawHeadChromaMask(ped)
     if not hideHeadActive then return end
     local gs = Customize.GreenScreen
@@ -1504,15 +1558,66 @@ end
 -- NUI CALLBACKS
 -- ════════════════════════════════════════════════════════
 
+local function SafeCall(label, fn)
+    local ok, err = xpcall(fn, debug.traceback)
+    if not ok then
+        print(('^1[uz_AutoShot]^0 %s failed: %s'):format(label, tostring(err)))
+    end
+    return ok
+end
+
+local function RecoverPlayerAfterError()
+    SafeCall('destroy camera', DestroyCamera)
+    SafeCall('destroy orbit camera', DestroyOrbitCamera)
+    SafeCall('delete studio entity', DeleteStudioEntity)
+    SafeCall('restore HUD', function() HideHUD(false) end)
+
+    hideHeadActive = false
+    isCapturing = false
+    isBrowsing = false
+    isPaused = false
+    isCancelled = false
+    isPreview = false
+    captureMode = 'clothing'
+    pendingCaptureUploads = {}
+
+    SafeCall('restore player state', function()
+        local ped = PlayerPedId()
+        if not IsEntityVisible(ped) then SetEntityVisible(ped, true, false) end
+        FreezeEntityPosition(ped, false)
+        SetPlayerControl(PlayerId(), true, 0)
+    end)
+    SafeCall('restore appearance', RestoreFullAppearance)
+    SafeCall('reset routing bucket', function() TriggerServerEvent('uz_autoshot:server:resetBucket') end)
+    SafeCall('drop NUI focus', function() SetNuiFocus(false, false) end)
+    SafeCall('notify NUI', function()
+        SendNUIMessage({ type = 'forceClose' })
+        SendNUIMessage({ type = 'captureCancelled' })
+    end)
+end
+
+local function CreateSafeThread(label, fn)
+    CreateThread(function()
+        local ok, err = xpcall(fn, debug.traceback)
+        if ok then return end
+
+        print(('^1[uz_AutoShot]^0 %s failed: %s'):format(label, tostring(err)))
+        RecoverPlayerAfterError()
+    end)
+end
+
 RegisterNUICallback('startCapture', function(data, cb)
     cb('ok')
     if not isPreview then return end
-    CreateThread(function() RunCapture(data.selectedComponents or {}, data.selectedProps or {}, data.selectedVehicles or {}, data.selectedObjects or {}, data.selectedOverlays or {}) end)
+    data = data or {}
+    CreateSafeThread('capture run', function()
+        RunCapture(data.selectedComponents or {}, data.selectedProps or {}, data.selectedVehicles or {}, data.selectedObjects or {}, data.selectedOverlays or {})
+    end)
 end)
 
 RegisterNUICallback('cancelPreview', function(_, cb)
-    CancelPreview()
     cb('ok')
+    CreateSafeThread('cancel preview', CancelPreview)
 end)
 
 RegisterNUICallback('pauseCapture', function(_, cb)
@@ -1532,12 +1637,13 @@ RegisterNUICallback('cancelCapture', function(_, cb)
 end)
 
 RegisterNUICallback('closeMenu', function(_, cb)
-    CloseBrowsing()
     cb('ok')
+    CreateSafeThread('close menu', CloseBrowsing)
 end)
 
 RegisterNUICallback('applyClothing', function(data, cb)
     cb('ok')
+    data = data or {}
     local ped = PlayerPedId()
     if data.itemType == 'component' then
         SetPedComponentVariation(ped, data.id, data.drawable, data.texture, 0)
@@ -1549,7 +1655,7 @@ RegisterNUICallback('applyClothing', function(data, cb)
         for i = 0, 12 do SetPedHeadOverlay(ped, i, 255, 1.0) end
         ApplyOverlayWithColor(ped, data.id, data.drawable)
     elseif data.itemType == 'vehicle' and data.model then
-        CreateThread(function()
+        CreateSafeThread('vehicle preview apply', function()
             DeleteStudioEntity()
             Wait(0)
             SetEntityVisible(ped, false, false)
@@ -1568,7 +1674,8 @@ RegisterNUICallback('applyClothing', function(data, cb)
     end
 end)
 
-RegisterNUICallback('setCameraPreset', function(data, cb)
+local function HandleSetCameraPreset(data)
+    data = data or {}
     local cam = data.camera or 'torso'
     activePreviewCamera = cam
 
@@ -1585,7 +1692,7 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
             entitySpawnToken = entitySpawnToken + 1
             local myToken = entitySpawnToken
 
-            CreateThread(function()
+            CreateSafeThread('entity preview spawn', function()
                 local ped = PlayerPedId()
 
                 -- Delete previous entity first
@@ -1718,10 +1825,15 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
         if orbitCam then SetCamFov(orbitCam, orbitFov) end
         UpdateOrbitCamera()
     end
+end
+
+RegisterNUICallback('setCameraPreset', function(data, cb)
     cb('ok')
+    CreateSafeThread('set camera preset', function() HandleSetCameraPreset(data) end)
 end)
 
 RegisterNUICallback('saveCameraAngle', function(data, cb)
+    data = data or {}
     local cam = data.camera or activePreviewCamera
     if cam and orbitCam then
         -- Use entity coords as reference for vehicle/object, ped coords for clothing
@@ -1771,6 +1883,7 @@ RegisterNUICallback('getCameraValues', function(_, cb)
 end)
 
 RegisterNUICallback('rotateCamera', function(data, cb)
+    data = data or {}
     if orbitCam then
         orbitAngleH = orbitAngleH - (data.deltaX or 0) * 0.005
         orbitCamZ   = orbitCamZ - (data.deltaY or 0) * 0.003
@@ -1780,6 +1893,7 @@ RegisterNUICallback('rotateCamera', function(data, cb)
 end)
 
 RegisterNUICallback('zoomCamera', function(data, cb)
+    data = data or {}
     if orbitCam then
         local maxDist = captureMode == 'vehicle' and 20.0 or captureMode == 'object' and 10.0 or 5.0
         orbitDist = math.max(0.1, math.min(maxDist, orbitDist + (data.delta or 0) * 0.1))
@@ -1789,6 +1903,7 @@ RegisterNUICallback('zoomCamera', function(data, cb)
 end)
 
 RegisterNUICallback('rollCamera', function(data, cb)
+    data = data or {}
     if orbitCam then
         orbitRoll = orbitRoll + (data.deltaX or 0) * 0.3
         UpdateOrbitCamera()
@@ -1797,6 +1912,7 @@ RegisterNUICallback('rollCamera', function(data, cb)
 end)
 
 RegisterNUICallback('adjustZPos', function(data, cb)
+    data = data or {}
     if orbitCam then
         local delta = data.delta or 0
         orbitCenter = vector3(orbitCenter.x, orbitCenter.y, orbitCenter.z + delta)
@@ -1806,6 +1922,7 @@ RegisterNUICallback('adjustZPos', function(data, cb)
 end)
 
 RegisterNUICallback('adjustFov', function(data, cb)
+    data = data or {}
     if orbitCam then
         orbitFov = math.max(5.0, math.min(120.0, orbitFov + (data.delta or 0)))
         SetCamFov(orbitCam, orbitFov)
@@ -1821,6 +1938,7 @@ RegisterNUICallback('resetCameraPreset', function(_, cb)
 end)
 
 RegisterNUICallback('setVehicleColor', function(data, cb)
+    data = data or {}
     vehicleColor.primary   = data.primary   or vehicleColor.primary
     vehicleColor.secondary = data.secondary or vehicleColor.secondary
     if spawnedEntity and DoesEntityExist(spawnedEntity) and captureMode == 'vehicle' then
@@ -1830,9 +1948,10 @@ RegisterNUICallback('setVehicleColor', function(data, cb)
 end)
 
 RegisterNUICallback('getTextures', function(data, cb)
+    data = data or {}
     local ped = PlayerPedId()
     local count
-    if data.itemType == 'overlay' then
+    if data.itemType == 'overlay' or data.id == nil or data.drawable == nil then
         count = 0
     elseif data.itemType == 'component' then
         count = GetNumberOfPedTextureVariations(ped, data.id, data.drawable)
@@ -1843,31 +1962,36 @@ RegisterNUICallback('getTextures', function(data, cb)
 end)
 
 RegisterNUICallback('enterRecapturePreview', function(_, cb)
-    isPreview = true
-    HideHUD(true)
-    TriggerServerEvent('uz_autoshot:server:setBucket', Customize.RoutingBucket)
-    Wait(500)
-
-    local ped = SetupCapturePed(pedAppearance.model or GetEntityModel(PlayerPedId()))
-
-    DestroyOrbitCamera()
-    CreateOrbitCamera(ped)
     cb('ok')
+    CreateSafeThread('enter recapture preview', function()
+        isPreview = true
+        HideHUD(true)
+        TriggerServerEvent('uz_autoshot:server:setBucket', Customize.RoutingBucket)
+        Wait(500)
+
+        local ped = SetupCapturePed(pedAppearance.model or GetEntityModel(PlayerPedId()))
+
+        DestroyOrbitCamera()
+        CreateOrbitCamera(ped)
+    end)
 end)
 
 RegisterNUICallback('cancelRecapturePreview', function(_, cb)
-    isPreview  = false
-    isBrowsing = false
-    DestroyOrbitCamera()
-    HideHUD(false)
-    RestoreFullAppearance()
-    TriggerServerEvent('uz_autoshot:server:resetBucket')
-    SetNuiFocus(false, false)
     cb('ok')
+    CreateSafeThread('cancel recapture preview', function()
+        isPreview  = false
+        isBrowsing = false
+        DestroyOrbitCamera()
+        HideHUD(false)
+        RestoreFullAppearance()
+        TriggerServerEvent('uz_autoshot:server:resetBucket')
+        SetNuiFocus(false, false)
+    end)
 end)
 
 RegisterNUICallback('recaptureItems', function(data, cb)
     cb('ok')
+    data = data or {}
     local items = data.items or {}
     if #items == 0 then return end
 
@@ -1894,8 +2018,10 @@ RegisterNUICallback('recaptureItems', function(data, cb)
         end
     end
 
-    DestroyOrbitCamera()
-    CreateThread(function() RecaptureSpecificItems(items) end)
+    CreateSafeThread('recapture items', function()
+        DestroyOrbitCamera()
+        RecaptureSpecificItems(items)
+    end)
 end)
 
 -- ════════════════════════════════════════════════════════
@@ -1959,6 +2085,9 @@ RegisterCommand('shotcar', function(_, args)
 
         SendNUIMessage({ type = 'singleEntityPreview', model = modelName, entityType = 'vehicle' })
         SetNuiFocus(true, true)
+    else
+        print('^3[uz_AutoShot]^0 Vehicle preview failed to spawn: ' .. modelName)
+        CancelPreview()
     end
 end, Customize.AceRestricted)
 
@@ -2016,6 +2145,9 @@ RegisterCommand('shotprop', function(_, args)
 
         SendNUIMessage({ type = 'singleEntityPreview', model = modelName, entityType = 'object' })
         SetNuiFocus(true, true)
+    else
+        print('^3[uz_AutoShot]^0 Object preview failed to spawn: ' .. modelName)
+        CancelPreview()
     end
 end, Customize.AceRestricted)
 
@@ -2023,10 +2155,11 @@ end, Customize.AceRestricted)
 RegisterNUICallback('confirmSingleCapture', function(data, cb)
     cb('ok')
     if not isPreview or not spawnedEntity then return end
+    data = data or {}
     local model = data.model or ''
     local eType = data.entityType or 'object'
 
-    CreateThread(function()
+    CreateSafeThread('single entity capture', function()
         captureRotOffset = math.deg(orbitAngleH) - Customize.StudioHeading
         DestroyOrbitCamera()
         isPreview = false
@@ -2052,8 +2185,8 @@ RegisterNUICallback('confirmSingleCapture', function(data, cb)
 end)
 
 RegisterNUICallback('cancelSingleCapture', function(_, cb)
-    CancelPreview()
     cb('ok')
+    CreateSafeThread('cancel single capture', CancelPreview)
 end)
 
 -- ════════════════════════════════════════════════════════

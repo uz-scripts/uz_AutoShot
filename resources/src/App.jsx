@@ -5,13 +5,19 @@ import { CaptureWidget }  from './components/CaptureWidget'
 import { ClothingMenu }   from './components/ClothingMenu'
 
 // ── NUI bridge ──────────────────────────────────────
-const fetchNUI = async (eventName, data = {}) => {
+const fetchNUI = async (eventName, data = {}, timeoutMs = 5000) => {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+
   try {
     const r = await fetch(`https://uz_AutoShot/${eventName}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+      signal: controller.signal,
     })
-    return await r.json()
+    const text = await r.text()
+    return text ? JSON.parse(text) : null
   } catch { return null }
+  finally { window.clearTimeout(timeout) }
 }
 
 // ── Orbit hint ──────────────────────────────────────
