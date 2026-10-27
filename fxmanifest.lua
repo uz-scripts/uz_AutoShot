@@ -5,7 +5,7 @@ lua54 'yes'
 name 'uz_AutoShot'
 description 'Clothing Thumbnail Generator & Browser for FiveM'
 author 'UZ'
-version '2.1.0'
+version '2.2.0'
 repository 'https://uz-scripts.com/scripts/uz-autoshot'
 
 shared_scripts {

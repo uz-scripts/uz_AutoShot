@@ -1,6 +1,15 @@
 const path = require('path');
 const fs   = require('fs');
-const { PNG } = require('pngjs');
+
+// pngjs comes from the yarn install on first start. A leftover .yarn.installed
+// without node_modules makes yarn skip that install; a bare require would then
+// kill this whole file, and every upload would vanish without a trace.
+let PNG = null;
+try {
+    ({ PNG } = require('pngjs'));
+} catch (e) {
+    console.log('^1[uz_AutoShot]^0 pngjs is not installed, captures are disabled. Delete .yarn.installed in the resource folder and restart the server, or run "npm install" there.');
+}
 
 const RESOURCE   = GetCurrentResourceName();
 const RES_PATH   = GetResourcePath(RESOURCE);
@@ -28,8 +37,10 @@ function checkAce(src) {
     return IsPlayerAceAllowed(src.toString(), ACE_NAME);
 }
 
-function removeChromaKey(pngBuffer, mode) {
-    const png = PNG.sync.read(pngBuffer);
+// Operates in place on a decoded PNG (RGBA). Callers decode once and encode
+// once: round-tripping a full-res frame through PNG between steps used to cost
+// more than the steps themselves, all of it on the server main thread.
+function removeChromaKey(png, mode) {
     const d = png.data;
     const w = png.width, h = png.height;
     let removed = 0;
@@ -106,12 +117,11 @@ function removeChromaKey(pngBuffer, mode) {
     }
 
     console.log('^2[uz_AutoShot]^0 Chroma key (' + mode + '): ' + removed + '/' + totalPx + ' pixels removed, edges feathered');
-    return PNG.sync.write(png, { colorType: 6 });
 }
 
-function resizePNG(pngBuffer, targetW, targetH) {
-    const src = PNG.sync.read(pngBuffer);
-    if (src.width === targetW && src.height === targetH) return pngBuffer;
+// Takes a decoded PNG, returns a new one (or the same object if no resize is needed)
+function resizePNG(src, targetW, targetH) {
+    if (src.width === targetW && src.height === targetH) return src;
 
     // Center-crop to target aspect ratio first, then resize
     const srcAspect = src.width / src.height;
@@ -235,13 +245,23 @@ function resizePNG(pngBuffer, targetW, targetH) {
     }
 
     console.log('^2[uz_AutoShot]^0 Crop+Resize: ' + src.width + 'x' + src.height + ' -> ' + cropW + 'x' + cropH + ' -> ' + targetW + 'x' + targetH + (isDownscale ? ' (area avg + sharpen)' : ' (bilinear)'));
-    return PNG.sync.write(dst, { colorType: 6 });
+    return dst;
 }
 
 const MAX_PAYLOAD_BYTES = 20 * 1024 * 1024;
 
 onNet('uz_autoshot:server:processCapture', (payload) => {
     const src = source;
+    const uploadId = payload && typeof payload === 'object' ? payload.id : undefined;
+    try {
+        processCapture(src, payload);
+    } finally {
+        // Ack every upload, saved or refused, so the client frees its upload slot
+        if (uploadId !== undefined) emitNet('uz_autoshot:client:captureProcessed', src, uploadId);
+    }
+});
+
+function processCapture(src, payload) {
     if (!checkAce(src)) {
         console.log('^1[uz_AutoShot]^0 Refused capture: player ' + src + ' lacks ' + ACE_NAME);
         return;
@@ -276,27 +296,54 @@ onNet('uz_autoshot:server:processCapture', (payload) => {
             return;
         }
 
-        let ext = wantFormat;
+        // The client forces PNG encoding whenever bg removal is on
+        const ext = wantTransp ? 'png' : wantFormat;
+        const wantResize = wantWidth > 0 && wantHeight > 0;
 
-        if (wantTransp) {
-            try {
-                outputData = removeChromaKey(outputData, chromaKey);
-                ext = 'png';
-            } catch (e) {
-                console.log('^3[uz_AutoShot]^0 Chroma key skipped: ' + e.message);
-            }
+        // Saving the raw full-screen frame instead would silently fill shots/ with unusable images
+        if (!PNG && ext === 'png' && (wantTransp || wantResize)) {
+            console.log('^1[uz_AutoShot]^0 Refused capture: pngjs is not installed (' + xFilename + ')');
+            return;
         }
 
-        if (wantWidth > 0 && wantHeight > 0 && ext === 'png') {
-            const MAX_DIM = 4096;
-            const clampedW = Math.min(Math.max(wantWidth, 16), MAX_DIM);
-            const clampedH = Math.min(Math.max(wantHeight, 16), MAX_DIM);
+        if (ext === 'png' && (wantTransp || wantResize)) {
+            let png = null;
             try {
-                outputData = resizePNG(outputData, clampedW, clampedH);
+                png = PNG.sync.read(outputData);
             } catch (e) {
-                console.log('^3[uz_AutoShot]^0 Resize skipped: ' + e.message);
+                console.log('^3[uz_AutoShot]^0 PNG decode failed, saving original: ' + e.message);
             }
-        } else if (wantWidth > 0 && wantHeight > 0 && ext !== 'png') {
+
+            if (png) {
+                let changed = false;
+
+                if (wantTransp) {
+                    try {
+                        removeChromaKey(png, chromaKey);
+                        changed = true;
+                    } catch (e) {
+                        console.log('^3[uz_AutoShot]^0 Chroma key skipped: ' + e.message);
+                    }
+                }
+
+                if (wantResize) {
+                    const MAX_DIM = 4096;
+                    const clampedW = Math.min(Math.max(wantWidth, 16), MAX_DIM);
+                    const clampedH = Math.min(Math.max(wantHeight, 16), MAX_DIM);
+                    try {
+                        const resized = resizePNG(png, clampedW, clampedH);
+                        if (resized !== png) {
+                            png = resized;
+                            changed = true;
+                        }
+                    } catch (e) {
+                        console.log('^3[uz_AutoShot]^0 Resize skipped: ' + e.message);
+                    }
+                }
+
+                if (changed) outputData = PNG.sync.write(png, { colorType: 6 });
+            }
+        } else if (wantResize) {
             console.log('^3[uz_AutoShot]^0 Resize requires PNG format; skipping for ' + ext);
         }
 
@@ -316,6 +363,17 @@ onNet('uz_autoshot:server:processCapture', (payload) => {
     } catch (err) {
         console.log('^1[uz_AutoShot]^0 Process error: ' + (err && err.message ? err.message : err));
     }
+}
+
+// Readiness check sent by the client before it enters the studio. No reply at
+// all means this file failed to load; a reply with a reason means it loaded
+// but can't save captures.
+onNet('uz_autoshot:server:ping', () => {
+    const src = source;
+    let reason = null;
+    if (!checkAce(src)) reason = 'You lack ' + ACE_NAME + ' on the server.';
+    else if (!PNG) reason = 'pngjs missing on server. Delete .yarn.installed and restart the server.';
+    emitNet('uz_autoshot:client:pong', src, { ok: reason === null, reason: reason });
 });
 
 onNet('uz_autoshot:server:setBucket', (bucket) => {

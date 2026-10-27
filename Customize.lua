@@ -24,9 +24,13 @@ Customize.CaptureAllTextures = false        -- true = all textures, false = text
 Customize.BatchSize         = 10
 Customize.BatchPauseWait    = 2000          -- ms
 Customize.GCInterval        = 20
-Customize.LatentRate        = 8000000       -- bytes/sec for capture upload (latent event throttle).
-                                            -- 8 MB/s is plenty for 512x512; raise for 4K source frames
-                                            -- (e.g. 16000000 = 16 MB/s) if uploads bottleneck the queue.
+Customize.LatentRate        = 8000000       -- bytes/sec per upload (latent event throttle). The upload is the
+                                            -- full-screen frame, not the resized output. On a remote server,
+                                            -- keep it at or below the client's real upload speed; going higher
+                                            -- just floods the connection and spikes ping.
+Customize.MaxPendingUploads = 2             -- uploads allowed in flight before the capture loop waits for the
+                                            -- server to confirm one. Stops slow connections from piling up
+                                            -- frames until the client times out.
 
 -- Chroma Key Screen
 Customize.ChromaKeyColor    = 'magenta'          -- 'green' | 'magenta'

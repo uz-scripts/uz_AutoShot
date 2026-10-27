@@ -12,10 +12,12 @@ local captureMode       = 'clothing'  -- 'clothing' | 'vehicle' | 'object'
 local spawnedEntity     = nil
 local vehicleColor      = { primary = 0, secondary = 0 }
 local entitySpawnToken  = 0  -- increments each spawn request to cancel stale ones
+-- Declared up here (not next to DrawHeadChromaMask) so the capture loops
+-- defined earlier in the file write this local instead of a global.
+local hideHeadActive    = false
 
--- Orbit-camera state. Declared up here so functions defined earlier in the
--- file (CreateCaptureCamera, ...) can read the live orbit values that the
--- ORBIT CAMERA section below assigns.
+-- Orbit-camera state. Declared up here so every section below (orbit camera,
+-- capture start snapshot, NUI camera callbacks) shares the same values.
 local orbitCam      = nil
 local orbitAngleH   = 0.0
 local orbitDist     = 1.2
@@ -51,8 +53,33 @@ local function SuppressWorld()
     SetRandomTrains(false)
 end
 
+local GENDER_MODELS = { male = 'mp_m_freemode_01', female = 'mp_f_freemode_01' }
+
 local function GetPedGender(ped)
-    return (GetEntityModel(ped) == GetHashKey('mp_m_freemode_01')) and 'male' or 'female'
+    return (GetEntityModel(ped) == GetHashKey(GENDER_MODELS.female)) and 'female' or 'male'
+end
+
+local function OtherGender(gender)
+    return gender == 'male' and 'female' or 'male'
+end
+
+-- Clothing framings are saved per gender (the female ped is shorter);
+-- vehicle and object framings are shared.
+local function AngleKey(cam)
+    if cam == 'vehicle' or cam == 'object' then return cam end
+    return captureGender .. ':' .. cam
+end
+
+-- A framing saved on the other gender still beats the preset default
+local function GetSavedAngle(cam)
+    local own = savedCameraAngles[AngleKey(cam)]
+    if own or cam == 'vehicle' or cam == 'object' then return own end
+    return savedCameraAngles[OtherGender(captureGender) .. ':' .. cam]
+end
+
+-- Extension the files are actually written with: bg removal always yields PNG
+local function SavedImageExt()
+    return Customize.TransparentBg and 'png' or (Customize.ScreenshotFormat or 'png')
 end
 
 local resolvedVehicleCategories = nil
@@ -125,7 +152,7 @@ end
 
 local function CreateCaptureCamera(entity, preset, presetName)
     local pedPos = GetEntityCoords(entity)
-    local saved  = presetName and savedCameraAngles[presetName]
+    local saved  = presetName and GetSavedAngle(presetName)
     local camX, camY, camZ, fov, lookZ, roll
 
     if saved then
@@ -138,27 +165,29 @@ local function CreateCaptureCamera(entity, preset, presetName)
         lookZ = pedPos.z + zP
         roll  = saved.roll or 0.0
     elseif preset.defaultAngleH then
-        -- Mirror the saved branch using the live orbit state. Reading
-        -- orbitAngleH/Dist/Fov here keeps "Start without saving" framed
-        -- exactly like the preview the user just left, instead of snapping
-        -- back to preset.defaultAngleH (which would 180-flip whenever the
-        -- user had rotated the orbit to face the ped).
-        local dist = (orbitDist > 0 and orbitDist) or preset.dist or 1.2
-        local aH   = orbitAngleH
-        local cZ   = orbitCamZ or preset.defaultCamZ or 0.0
+        -- Unsaved preset: frame it exactly like the preview does when this
+        -- category is selected (SetOrbitPreset). The category that was on
+        -- screen when capture started is snapshotted into savedCameraAngles
+        -- (SnapshotOrbitAngle), so it never lands here. Reading the live
+        -- orbit state instead would hand every unsaved category the last
+        -- previewed category's angle/distance (back-facing shots after a
+        -- Bags/Decals preview, camera inside the car after a clothing one).
+        local dist = preset.dist or 1.2
+        local aH   = math.rad(preset.defaultAngleH)
+        local cZ   = preset.defaultCamZ or 0.0
         camX  = pedPos.x + dist * math.sin(aH)
         camY  = pedPos.y - dist * math.cos(aH)
         camZ  = pedPos.z + preset.zPos + cZ
-        fov   = (orbitFov and orbitFov > 0) and orbitFov or preset.fov
+        fov   = preset.fov
         lookZ = pedPos.z + preset.zPos
-        roll  = orbitRoll or preset.defaultRoll or 0.0
+        roll  = preset.defaultRoll or 0.0
     else
         -- Legacy preset without defaultAngleH: rotate ped to align with
         -- camera, then place camera behind ped's forward vector.
         local rotZ = preset.rotation.z + captureRotOffset
-        SetEntityRotation(ped, preset.rotation.x, preset.rotation.y, rotZ, 2, false)
+        SetEntityRotation(entity, preset.rotation.x, preset.rotation.y, rotZ, 2, false)
         Wait(50)
-        local fwd = GetEntityForwardVector(ped)
+        local fwd = GetEntityForwardVector(entity)
         local dist = preset.dist or 1.2
         camX  = pedPos.x - fwd.x * dist
         camY  = pedPos.y - fwd.y * dist
@@ -288,8 +317,7 @@ end
 
 -- ════════════════════════════════════════════════════════
 -- ORBIT CAMERA
--- (state variables hoisted to the top of the file so earlier functions
---  like CreateCaptureCamera can read them)
+-- (state variables hoisted to the top of the file)
 -- ════════════════════════════════════════════════════════
 
 local function UpdateOrbitCamera()
@@ -332,6 +360,7 @@ local function CreateOrbitCamera(ped, presetName)
     local pName = presetName or (Customize.Categories[1] and Customize.Categories[1].camera) or 'torso'
     local preset = Customize.CameraPresets[pName]
     local pedPos = GetEntityCoords(ped)
+    activePreviewCamera = pName
 
     orbitCenter   = vector3(pedPos.x, pedPos.y, pedPos.z + preset.zPos)
     orbitBaseDist = preset.dist or 1.2
@@ -434,7 +463,70 @@ end
 -- CAPTURE & UPLOAD
 -- ════════════════════════════════════════════════════════
 
+-- Uploads the server hasn't confirmed yet: upload id -> send time.
+-- Latent events have no backpressure of their own: every queued event is sent
+-- in parallel at LatentRate, so on a slow uplink an unthrottled capture loop
+-- keeps stacking multi-MB frames until the connection times out. Localhost
+-- never shows this because the "uplink" is unlimited.
+local pendingUploads     = {}
+local pendingCount       = 0
+local nextUploadId       = 0
+local UPLOAD_ACK_TIMEOUT = 60000
+
+RegisterNetEvent('uz_autoshot:client:captureProcessed', function(uploadId)
+    if pendingUploads[uploadId] then
+        pendingUploads[uploadId] = nil
+        pendingCount = pendingCount - 1
+    end
+end)
+
+local function WaitForPendingUploads(limit)
+    while pendingCount > limit and not isCancelled do
+        local now = GetGameTimer()
+        for id, sentAt in pairs(pendingUploads) do
+            if now - sentAt > UPLOAD_ACK_TIMEOUT then
+                pendingUploads[id] = nil
+                pendingCount = pendingCount - 1
+                print(('^3[uz_AutoShot]^0 Upload #%d not confirmed by server after %ds, moving on'):format(id, UPLOAD_ACK_TIMEOUT // 1000))
+            end
+        end
+        if pendingCount > limit then Wait(50) end
+    end
+end
+
+-- Reply to the readiness ping; nil while waiting
+local serverStatus = nil
+RegisterNetEvent('uz_autoshot:client:pong', function(status) serverStatus = status end)
+
+-- A broken server side (server.js failed to load, pngjs missing) otherwise only
+-- shows up as every upload timing out one by one: a capture that looks frozen
+-- and an empty shots/ folder. Ask once before entering the studio instead.
+local function ServerReady()
+    serverStatus = nil
+    TriggerServerEvent('uz_autoshot:server:ping')
+    local timeout = GetGameTimer() + 5000
+    while serverStatus == nil and GetGameTimer() < timeout do Wait(50) end
+
+    local reason
+    if serverStatus == nil then
+        reason = 'Server side not responding. Check the server console.'
+    elseif not serverStatus.ok then
+        reason = serverStatus.reason or 'Server refused captures.'
+    else
+        return true
+    end
+
+    print('^1[uz_AutoShot]^0 ' .. reason)
+    BeginTextCommandThefeedPost('STRING')
+    AddTextComponentSubstringPlayerName('uz_AutoShot: ' .. reason)
+    EndTextCommandThefeedPostTicker(false, false)
+    return false
+end
+
 local function CaptureAndUpload(filename)
+    WaitForPendingUploads((Customize.MaxPendingUploads or 2) - 1)
+    if isCancelled then return end
+
     ForceHighQuality()
 
     local encoding = Customize.ScreenshotFormat or 'png'
@@ -454,14 +546,23 @@ local function CaptureAndUpload(filename)
     local timeout = GetGameTimer() + 10000
     while not done and GetGameTimer() < timeout do Wait(50) end
 
+    if not done then
+        print('^3[uz_AutoShot]^0 Capture skipped (' .. filename .. '): screenshot-basic did not respond within 10s')
+        return
+    end
     if not base64 or base64 == '' then
-        print('^3[uz_AutoShot]^0 Capture skipped (' .. filename .. '): empty screenshot')
+        print('^3[uz_AutoShot]^0 Capture skipped (' .. filename .. '): screenshot-basic returned no image data')
         return
     end
 
+    nextUploadId = nextUploadId + 1
+    pendingUploads[nextUploadId] = GetGameTimer()
+    pendingCount = pendingCount + 1
+
     TriggerLatentServerEvent('uz_autoshot:server:processCapture', Customize.LatentRate or 8000000, {
+        id          = nextUploadId,
         filename    = filename,
-        format      = Customize.ScreenshotFormat or 'png',
+        format      = encoding,
         transparent = Customize.TransparentBg and true or false,
         chromaKey   = Customize.ChromaKeyColor or 'green',
         width       = Customize.ScreenshotWidth or 0,
@@ -485,6 +586,35 @@ end
 -- PED APPEARANCE — Save / Restore
 -- ════════════════════════════════════════════════════════
 
+-- Appearance resources exposing getPedAppearance / setPedAppearance (same API).
+-- Natives can't read tattoos at all, so only these hold the full look.
+local APPEARANCE_PROVIDERS = { 'illenium-appearance', 'fivem-appearance' }
+
+local function GetAppearanceProvider()
+    for _, name in ipairs(APPEARANCE_PROVIDERS) do
+        if GetResourceState(name) == 'started' then return name end
+    end
+    return nil
+end
+
+-- GET_PED_HEAD_BLEND_DATA fills a struct; the plain Lua wrapper only returns
+-- the bool. Reading through consecutive pointer slots is the same workaround
+-- illenium-appearance uses.
+local function ReadHeadBlend(ped)
+    local shapeFirst, shapeSecond, shapeThird, skinFirst, skinSecond, skinThird, shapeMix, skinMix, thirdMix =
+        Citizen.InvokeNative(0x2746BD9D88C5C5D0, ped,
+            Citizen.PointerValueIntInitialized(0), Citizen.PointerValueIntInitialized(0), Citizen.PointerValueIntInitialized(0),
+            Citizen.PointerValueIntInitialized(0), Citizen.PointerValueIntInitialized(0), Citizen.PointerValueIntInitialized(0),
+            Citizen.PointerValueFloatInitialized(0), Citizen.PointerValueFloatInitialized(0), Citizen.PointerValueFloatInitialized(0))
+    if not shapeFirst then return nil end
+    local function mix(v) return math.max(0.0, math.min(1.0, (tonumber(v) or 0.0) + 0.0)) end
+    return {
+        shapeFirst = shapeFirst, shapeSecond = shapeSecond, shapeThird = shapeThird or 0,
+        skinFirst  = skinFirst,  skinSecond  = skinSecond,  skinThird  = skinThird or 0,
+        shapeMix = mix(shapeMix), skinMix = mix(skinMix), thirdMix = mix(thirdMix),
+    }
+end
+
 local function SaveFullAppearance(ped)
     pedAppearance.model   = GetEntityModel(ped)
     pedAppearance.coords  = GetEntityCoords(ped)
@@ -507,28 +637,30 @@ local function SaveFullAppearance(ped)
         }
     end
 
-    local ok, hbData = pcall(GetPedHeadBlendData, ped)
-    if ok and hbData and type(hbData) == 'table' then
-        pedAppearance.headBlend = {
-            shapeFirst  = hbData.shapeFirst  or hbData[1] or 0,
-            shapeSecond = hbData.shapeSecond or hbData[2] or 0,
-            shapeThird  = hbData.shapeThird  or hbData[3] or 0,
-            skinFirst   = hbData.skinFirst   or hbData[4] or 0,
-            skinSecond  = hbData.skinSecond  or hbData[5] or 0,
-            skinThird   = hbData.skinThird   or hbData[6] or 0,
-            shapeMix    = (hbData.shapeMix   or hbData[7] or 0.0) + 0.0,
-            skinMix     = (hbData.skinMix    or hbData[8] or 0.0) + 0.0,
-            thirdMix    = (hbData.thirdMix   or hbData[9] or 0.0) + 0.0,
-        }
-    else
-        pedAppearance.headBlend = nil
-    end
+    pedAppearance.headBlend = ReadHeadBlend(ped)
 
     pedAppearance.faceFeatures = {}
     for i = 0, 19 do pedAppearance.faceFeatures[i] = GetPedFaceFeature(ped, i) end
 
     pedAppearance.headOverlays = {}
-    for i = 0, 12 do pedAppearance.headOverlays[i] = GetPedHeadOverlayValue(ped, i) end
+    for i = 0, 12 do
+        local _, value, colourType, firstColour, secondColour, opacity = GetPedHeadOverlayData(ped, i)
+        pedAppearance.headOverlays[i] = {
+            value = value, colourType = colourType,
+            firstColour = firstColour, secondColour = secondColour, opacity = opacity,
+        }
+    end
+
+    pedAppearance.hair     = { color = GetPedHairColor(ped), highlight = GetPedHairHighlightColor(ped) }
+    pedAppearance.eyeColor = GetPedEyeColor(ped)
+
+    -- Full snapshot (tattoos included) from the appearance resource, if any
+    pedAppearance.provider = GetAppearanceProvider()
+    pedAppearance.full     = nil
+    if pedAppearance.provider then
+        local ok, full = pcall(function() return exports[pedAppearance.provider]:getPedAppearance(ped) end)
+        if ok and type(full) == 'table' then pedAppearance.full = full end
+    end
 end
 
 local function RestoreFullAppearance()
@@ -572,28 +704,48 @@ local function RestoreFullAppearance()
         ClearFocus()
     end
 
-    if pedAppearance.headBlend then
-        local hb = pedAppearance.headBlend
-        SetPedHeadBlendData(ped, hb.shapeFirst, hb.shapeSecond, hb.shapeThird, hb.skinFirst, hb.skinSecond, hb.skinThird, hb.shapeMix, hb.skinMix, hb.thirdMix, false)
+    -- SetPlayerModel above created a fresh ped, so everything must be reapplied.
+    -- Prefer the appearance resource: it is the only source that has tattoos.
+    local restored = false
+    local provider = pedAppearance.provider
+    if pedAppearance.full and provider and GetResourceState(provider) == 'started' then
+        restored = pcall(function() exports[provider]:setPedAppearance(ped, pedAppearance.full) end)
+        if not restored then
+            print('^3[uz_AutoShot]^0 ' .. provider .. ' setPedAppearance failed, restoring with natives')
+        end
     end
 
-    for i = 0, 19 do
-        if pedAppearance.faceFeatures[i] then SetPedFaceFeature(ped, i, pedAppearance.faceFeatures[i]) end
-    end
-    for i = 0, 12 do
-        local val = pedAppearance.headOverlays[i]
-        if val and val >= 0 then SetPedHeadOverlay(ped, i, val, 1.0) end
-    end
-    for i = 0, 11 do
-        local comp = pedAppearance.components[i]
-        if comp then SetPedComponentVariation(ped, i, comp.drawable, comp.texture, comp.palette) end
-    end
-    for i = 0, 7 do
-        local prop = pedAppearance.props[i]
-        if prop then
-            if prop.drawable == -1 then ClearPedProp(ped, i)
-            else SetPedPropIndex(ped, i, prop.drawable, prop.texture, true) end
+    if not restored then
+        if pedAppearance.headBlend then
+            local hb = pedAppearance.headBlend
+            SetPedHeadBlendData(ped, hb.shapeFirst, hb.shapeSecond, hb.shapeThird, hb.skinFirst, hb.skinSecond, hb.skinThird, hb.shapeMix, hb.skinMix, hb.thirdMix, false)
         end
+
+        for i = 0, 19 do
+            if pedAppearance.faceFeatures[i] then SetPedFaceFeature(ped, i, pedAppearance.faceFeatures[i]) end
+        end
+        for i = 0, 12 do
+            local o = pedAppearance.headOverlays[i]
+            if o and o.value then
+                SetPedHeadOverlay(ped, i, o.value, (o.opacity or 1.0) + 0.0)
+                if o.value ~= 255 and o.colourType and o.colourType > 0 then
+                    SetPedHeadOverlayColor(ped, i, o.colourType, o.firstColour or 0, o.secondColour or 0)
+                end
+            end
+        end
+        for i = 0, 11 do
+            local comp = pedAppearance.components[i]
+            if comp then SetPedComponentVariation(ped, i, comp.drawable, comp.texture, comp.palette) end
+        end
+        for i = 0, 7 do
+            local prop = pedAppearance.props[i]
+            if prop then
+                if prop.drawable == -1 then ClearPedProp(ped, i)
+                else SetPedPropIndex(ped, i, prop.drawable, prop.texture, true) end
+            end
+        end
+        if pedAppearance.hair then SetPedHairColor(ped, pedAppearance.hair.color, pedAppearance.hair.highlight) end
+        if pedAppearance.eyeColor then SetPedEyeColor(ped, pedAppearance.eyeColor) end
     end
 
     SetEntityCollision(ped, true, true)
@@ -617,7 +769,9 @@ local function SetupCapturePed(modelHash)
     Wait(150)
 
     local ped = PlayerPedId()
-    SetPedHeadBlendData(ped, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, false)
+    -- Head blend parents 0-20 are male faces, 21+ female; same skin for both
+    local face = modelHash == GetHashKey(GENDER_MODELS.female) and 21 or 0
+    SetPedHeadBlendData(ped, face, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, false)
     SetEntityCoordsNoOffset(ped, Customize.StudioCoords.x, Customize.StudioCoords.y, Customize.StudioCoords.z, false, false, false)
     SetEntityHeading(ped, Customize.StudioHeading)
     FreezeEntityPosition(ped, true)
@@ -657,9 +811,17 @@ end
 -- VEHICLE / OBJECT SPAWN HELPERS
 -- ════════════════════════════════════════════════════════
 
-local function SpawnStudioVehicle(modelName)
+-- token: entitySpawnToken at request time. If a newer request (or capture
+-- start) bumped it while the model was streaming, spawning now would orphan
+-- or clobber the newer entity, so bail out. No yield between this check and
+-- the spawnedEntity assignment below.
+local function SpawnStudioVehicle(modelName, token)
     local hash = GetHashKey(modelName)
     if not LoadModel(hash) then return nil end
+    if token and token ~= entitySpawnToken then
+        SetModelAsNoLongerNeeded(hash)
+        return nil
+    end
 
     local sx, sy, sz = Customize.StudioCoords.x, Customize.StudioCoords.y, Customize.StudioCoords.z
 
@@ -688,9 +850,13 @@ local function SpawnStudioVehicle(modelName)
     return veh
 end
 
-local function SpawnStudioObject(modelName)
+local function SpawnStudioObject(modelName, token)
     local hash = GetHashKey(modelName)
     if not LoadModel(hash) then return nil end
+    if token and token ~= entitySpawnToken then
+        SetModelAsNoLongerNeeded(hash)
+        return nil
+    end
 
     local sx, sy, sz = Customize.StudioCoords.x, Customize.StudioCoords.y, Customize.StudioCoords.z
 
@@ -735,6 +901,17 @@ local function GetEntityTargetPos()
     return GetEntityCoords(PlayerPedId())
 end
 
+-- Store the live orbit framing under a camera preset name, with zPos relative
+-- to whatever the camera is looking at (spawned entity, or the ped).
+local function SnapshotOrbitAngle(cam)
+    savedCameraAngles[AngleKey(cam)] = {
+        angleH = orbitAngleH,
+        dist   = orbitDist,   fov  = orbitFov,
+        zPos   = orbitCenter.z - GetEntityTargetPos().z,
+        camZ   = orbitCamZ,   roll = orbitRoll,
+    }
+end
+
 -- ════════════════════════════════════════════════════════
 -- ANIMATION HELPERS
 -- ════════════════════════════════════════════════════════
@@ -765,7 +942,7 @@ end
 
 local function SetupCategoryCamera(ped, cameraName)
     local preset   = Customize.CameraPresets[cameraName]
-    local hasSaved = savedCameraAngles[cameraName] ~= nil
+    local hasSaved = GetSavedAngle(cameraName) ~= nil
     DestroyCamera()
     captureCamera = CreateCaptureCamera(ped, preset, cameraName)
     return preset, hasSaved
@@ -979,6 +1156,13 @@ local function CaptureVehicles(selectedModelSet)
         captureCamera = CreateCaptureCamera(veh, preset, 'vehicle')
         Wait(Customize.WaitAfterApply)
 
+        if not DoesEntityExist(veh) then
+            -- Nothing in this resource deletes it mid-capture; a vehicle
+            -- cleanup / anticheat resource is the usual suspect.
+            print(('^3[uz_AutoShot]^0 Vehicle %s was deleted before capture (by another resource?), skipped'):format(model))
+            goto nextVeh
+        end
+
         CaptureAndUpload('vehicles/' .. model)
 
         captured = captured + 1
@@ -1120,7 +1304,7 @@ local function RecaptureSpecificItems(items)
 
         local cameraKey = cameraMap[itemKey] or 'torso'
         local preset    = Customize.CameraPresets[cameraKey]
-        local hasSaved  = savedCameraAngles[cameraKey] ~= nil
+        local hasSaved  = GetSavedAngle(cameraKey) ~= nil
 
         if cameraKey ~= currentCameraKey then
             if currentAnim then StopCategoryAnim(ped) end
@@ -1170,6 +1354,8 @@ local function RecaptureSpecificItems(items)
         ThrottledWait()
     end
 
+    -- Let in-flight uploads land so "complete" means the files are on disk
+    WaitForPendingUploads(0)
     local wasCancelled = isCancelled
     CleanupCapture()
     SendNUIMessage({ type = 'forceClose' })
@@ -1228,6 +1414,7 @@ local function EnterCapturePreview()
         EndTextCommandThefeedPostTicker(false, false)
         return
     end
+    if not ServerReady() then return end
 
     savedCameraAngles   = {}
     activePreviewCamera = nil
@@ -1241,12 +1428,14 @@ local function EnterCapturePreview()
     Wait(500)
     HideHUD(true)
 
-    ped = SetupCapturePed(pedAppearance.model)
+    -- Clothing only exists on the freemode peds; any other player model
+    -- (story/addon ped) starts the studio on the male one
+    ped = SetupCapturePed(GetHashKey(GENDER_MODELS[captureGender]))
 
     local categories = BuildCategoryList(false)
     CreateOrbitCamera(ped, categories[1] and categories[1].camera or 'torso')
 
-    SendNUIMessage({ type = 'capturePreview', categories = categories })
+    SendNUIMessage({ type = 'capturePreview', categories = categories, gender = captureGender })
     SetNuiFocus(true, true)
 end
 
@@ -1272,8 +1461,15 @@ local function SetupEntityCapturePhase(mode)
     Wait(200)
 end
 
-local function RunCapture(selectedComponents, selectedProps, selectedVehicles, selectedObjects, selectedOverlays)
+local function RunCapture(selectedComponents, selectedProps, selectedVehicles, selectedObjects, selectedOverlays, bothGenders)
+    -- The category on screen when Start was pressed is captured exactly as
+    -- previewed even without "save angle"; every other unsaved category
+    -- falls back to its own preset in CreateCaptureCamera.
+    if activePreviewCamera and not savedCameraAngles[AngleKey(activePreviewCamera)] then
+        SnapshotOrbitAngle(activePreviewCamera)
+    end
     captureRotOffset = math.deg(orbitAngleH) - Customize.StudioHeading
+    entitySpawnToken = entitySpawnToken + 1  -- preview spawns still loading must not land in the capture
     DestroyOrbitCamera()
     DeleteStudioEntity()
 
@@ -1302,13 +1498,26 @@ local function RunCapture(selectedComponents, selectedProps, selectedVehicles, s
     SetNuiFocus(false, false)
     Wait(300)
 
-    -- ── Phase 1: Clothing + Ped Props + Overlays ──
+    -- ── Phase 1: Clothing + Ped Props + Overlays (previewed gender first) ──
     if hasPed and not isCancelled then
-        captureMode = 'clothing'
-        local ped = PlayerPedId()
-        CaptureComponents(ped, captureGender, compSet)
-        if not isCancelled then CaptureProps(ped, captureGender, propSet) end
-        if not isCancelled then CaptureOverlays(ped, captureGender, overlaySet) end
+        local genders = { captureGender }
+        if bothGenders then genders[2] = OtherGender(captureGender) end
+
+        for _, gender in ipairs(genders) do
+            if isCancelled then break end
+            if gender ~= captureGender then
+                SetupCapturePed(GetHashKey(GENDER_MODELS[gender]))
+                captureGender = gender
+            end
+            captureMode = 'clothing'
+            local ped = PlayerPedId()
+            -- Previewing a vehicle/object hides the ped; starting from that tab
+            -- would otherwise shoot every clothing item on an invisible ped.
+            if not IsEntityVisible(ped) then SetEntityVisible(ped, true, false) end
+            CaptureComponents(ped, captureGender, compSet)
+            if not isCancelled then CaptureProps(ped, captureGender, propSet) end
+            if not isCancelled then CaptureOverlays(ped, captureGender, overlaySet) end
+        end
     end
 
     -- ── Phase 2: Vehicles ──
@@ -1323,6 +1532,7 @@ local function RunCapture(selectedComponents, selectedProps, selectedVehicles, s
         CaptureObjects(objSet)
     end
 
+    WaitForPendingUploads(0)
     local wasCancelled = isCancelled
     CleanupCapture()
     SendNUIMessage({ type = wasCancelled and 'captureCancelled' or 'captureComplete' })
@@ -1358,8 +1568,6 @@ end
 -- ════════════════════════════════════════════════════════
 -- HEAD HIDE (chroma key mask)
 -- ════════════════════════════════════════════════════════
-
-local hideHeadActive = false
 
 local function DrawHeadChromaMask(ped)
     if not hideHeadActive then return end
@@ -1496,7 +1704,7 @@ local function OpenClothingMenu()
         type       = 'openMenu',
         gender     = captureGender,
         categories = categories,
-        imgExt     = Customize.TransparentBg and 'png' or (Customize.ScreenshotFormat or 'png'),
+        imgExt     = SavedImageExt(),
     })
 end
 
@@ -1507,7 +1715,23 @@ end
 RegisterNUICallback('startCapture', function(data, cb)
     cb('ok')
     if not isPreview then return end
-    CreateThread(function() RunCapture(data.selectedComponents or {}, data.selectedProps or {}, data.selectedVehicles or {}, data.selectedObjects or {}, data.selectedOverlays or {}) end)
+    CreateThread(function() RunCapture(data.selectedComponents or {}, data.selectedProps or {}, data.selectedVehicles or {}, data.selectedObjects or {}, data.selectedOverlays or {}, data.bothGenders == true) end)
+end)
+
+-- Swap the studio ped between the freemode models during preview
+RegisterNUICallback('setCaptureGender', function(data, cb)
+    local model = GENDER_MODELS[data.gender]
+    if not isPreview or isCapturing or not model then
+        cb({ gender = captureGender })
+        return
+    end
+    if data.gender ~= captureGender then
+        local ped = SetupCapturePed(GetHashKey(model))
+        captureGender = data.gender
+        -- SetPlayerModel makes the new ped visible; keep it hidden behind a vehicle/object preview
+        if captureMode ~= 'clothing' then SetEntityVisible(ped, false, false) end
+    end
+    cb({ gender = captureGender })
 end)
 
 RegisterNUICallback('cancelPreview', function(_, cb)
@@ -1549,13 +1773,17 @@ RegisterNUICallback('applyClothing', function(data, cb)
         for i = 0, 12 do SetPedHeadOverlay(ped, i, 255, 1.0) end
         ApplyOverlayWithColor(ped, data.id, data.drawable)
     elseif data.itemType == 'vehicle' and data.model then
+        entitySpawnToken = entitySpawnToken + 1
+        local myToken = entitySpawnToken
         CreateThread(function()
             DeleteStudioEntity()
             Wait(0)
+            if entitySpawnToken ~= myToken then return end
             SetEntityVisible(ped, false, false)
             captureMode = 'vehicle'
-            SpawnStudioVehicle(data.model)
+            SpawnStudioVehicle(data.model, myToken)
             Wait(300)
+            if entitySpawnToken ~= myToken then return end
             if spawnedEntity and DoesEntityExist(spawnedEntity) then
                 local entityPos = GetEntityCoords(spawnedEntity)
                 local preset = Customize.CameraPresets['vehicle']
@@ -1579,10 +1807,12 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
     end
 
     if (isPreview or isBrowsing) and data.categoryType and data.categoryId ~= nil then
+        -- Any category switch (clothing included) supersedes vehicle/object
+        -- spawns still loading, so they can't pop in after the switch.
+        entitySpawnToken = entitySpawnToken + 1
+
         if isEntityMode then
             -- Must run in a thread because we need Wait() for model loading
-            -- Token prevents race conditions when switching quickly
-            entitySpawnToken = entitySpawnToken + 1
             local myToken = entitySpawnToken
 
             CreateThread(function()
@@ -1609,18 +1839,18 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
                         end
                     end
                     if modelToSpawn then
-                        SpawnStudioVehicle(modelToSpawn)
+                        SpawnStudioVehicle(modelToSpawn, myToken)
                     end
                 else
-                    SpawnStudioObject(data.categoryId)
+                    SpawnStudioObject(data.categoryId, myToken)
                 end
 
                 Wait(300)
-                if entitySpawnToken ~= myToken then
-                    -- A newer spawn request came in, delete what we just spawned
-                    DeleteStudioEntity()
-                    return
-                end
+                -- Superseded while settling. The newer request already
+                -- deleted our entity and spawnedEntity now belongs to it;
+                -- deleting here would remove *its* vehicle (the "appears
+                -- then vanishes after 0.3s" bug).
+                if entitySpawnToken ~= myToken then return end
 
                 if spawnedEntity and DoesEntityExist(spawnedEntity) then
                     local entityPos = GetEntityCoords(spawnedEntity)
@@ -1699,8 +1929,8 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
         end
     end
 
-    if savedCameraAngles[cam] then
-        local saved = savedCameraAngles[cam]
+    local saved = GetSavedAngle(cam)
+    if saved then
         orbitAngleH   = saved.angleH
         orbitDist     = saved.dist
         orbitFov      = saved.fov
@@ -1724,19 +1954,7 @@ end)
 RegisterNUICallback('saveCameraAngle', function(data, cb)
     local cam = data.camera or activePreviewCamera
     if cam and orbitCam then
-        -- Use entity coords as reference for vehicle/object, ped coords for clothing
-        local refZ
-        if captureMode ~= 'clothing' and spawnedEntity and DoesEntityExist(spawnedEntity) then
-            refZ = GetEntityCoords(spawnedEntity).z
-        else
-            refZ = GetEntityCoords(PlayerPedId()).z
-        end
-        savedCameraAngles[cam] = {
-            angleH = orbitAngleH,
-            dist   = orbitDist,   fov  = orbitFov,
-            zPos   = orbitCenter.z - refZ,
-            camZ   = orbitCamZ,   roll = orbitRoll,
-        }
+        SnapshotOrbitAngle(cam)
         cb({ saved = true, camera = cam })
     else
         cb({ saved = false })
@@ -1843,6 +2061,12 @@ RegisterNUICallback('getTextures', function(data, cb)
 end)
 
 RegisterNUICallback('enterRecapturePreview', function(_, cb)
+    if not ServerReady() then
+        CloseBrowsing()
+        SendNUIMessage({ type = 'captureCancelled' })
+        cb('ok')
+        return
+    end
     isPreview = true
     HideHUD(true)
     TriggerServerEvent('uz_autoshot:server:setBucket', Customize.RoutingBucket)
@@ -1888,7 +2112,7 @@ RegisterNUICallback('recaptureItems', function(data, cb)
         for _, item in ipairs(items) do
             local cam = cameraMap[item.type .. '_' .. item.id]
             if cam and not seen[cam] then
-                savedCameraAngles[cam] = orbitState
+                savedCameraAngles[AngleKey(cam)] = orbitState
                 seen[cam] = true
             end
         end
@@ -1923,6 +2147,7 @@ RegisterCommand('shotcar', function(_, args)
         EndTextCommandThefeedPostTicker(false, false)
         return
     end
+    if not ServerReady() then return end
 
     isPreview = true
     captureMode = 'vehicle'
@@ -1980,6 +2205,7 @@ RegisterCommand('shotprop', function(_, args)
         EndTextCommandThefeedPostTicker(false, false)
         return
     end
+    if not ServerReady() then return end
 
     isPreview = true
     captureMode = 'object'
@@ -2025,8 +2251,11 @@ RegisterNUICallback('confirmSingleCapture', function(data, cb)
     if not isPreview or not spawnedEntity then return end
     local model = data.model or ''
     local eType = data.entityType or 'object'
+    local camName = eType == 'vehicle' and 'vehicle' or 'object'
 
     CreateThread(function()
+        -- Single capture: the orbit the user just confirmed is the shot
+        SnapshotOrbitAngle(camName)
         captureRotOffset = math.deg(orbitAngleH) - Customize.StudioHeading
         DestroyOrbitCamera()
         isPreview = false
@@ -2037,15 +2266,16 @@ RegisterNUICallback('confirmSingleCapture', function(data, cb)
         SetNuiFocus(false, false)
         Wait(300)
 
-        local preset = Customize.CameraPresets[eType == 'vehicle' and 'vehicle' or 'object']
+        local preset = Customize.CameraPresets[camName]
         DestroyCamera()
-        captureCamera = CreateCaptureCamera(spawnedEntity, preset, eType)
+        captureCamera = CreateCaptureCamera(spawnedEntity, preset, camName)
         Wait(Customize.WaitAfterApply)
 
         local folder = eType == 'vehicle' and 'vehicles' or 'objects'
         CaptureAndUpload(folder .. '/' .. model)
 
         SendProgress(1, 1, model)
+        WaitForPendingUploads(0)
         CleanupCapture()
         SendNUIMessage({ type = 'captureComplete' })
     end)
@@ -2062,13 +2292,15 @@ end)
 
 exports('getPhotoURL', function(gender, itemType, id, drawable, texture)
     local prefix = itemType == 'overlay' and 'overlay_' or (itemType == 'prop' and 'prop_' or '')
-    if itemType == 'overlay' then
+    -- Mirrors the capture filenames: overlays and texture 0 are always saved
+    -- as <drawable>.<ext>, only texture > 0 gets a _<texture> suffix.
+    if itemType == 'overlay' or not texture or texture == 0 then
         return ('https://cfx-nui-uz_AutoShot/shots/%s/%s%d/%d.%s'):format(
-            gender, prefix, id, drawable, Customize.ScreenshotFormat
+            gender, prefix, id, drawable, SavedImageExt()
         )
     end
     return ('https://cfx-nui-uz_AutoShot/shots/%s/%s%d/%d_%d.%s'):format(
-        gender, prefix, id, drawable, texture, Customize.ScreenshotFormat
+        gender, prefix, id, drawable, texture, SavedImageExt()
     )
 end)
 
@@ -2077,15 +2309,15 @@ exports('getShotsBaseURL', function()
 end)
 
 exports('getPhotoFormat', function()
-    return Customize.ScreenshotFormat
+    return SavedImageExt()
 end)
 
 exports('getVehiclePhotoURL', function(modelName)
-    return ('https://cfx-nui-uz_AutoShot/shots/vehicles/%s.%s'):format(modelName, Customize.ScreenshotFormat)
+    return ('https://cfx-nui-uz_AutoShot/shots/vehicles/%s.%s'):format(modelName, SavedImageExt())
 end)
 
 exports('getObjectPhotoURL', function(modelName)
-    return ('https://cfx-nui-uz_AutoShot/shots/objects/%s.%s'):format(modelName, Customize.ScreenshotFormat)
+    return ('https://cfx-nui-uz_AutoShot/shots/objects/%s.%s'):format(modelName, SavedImageExt())
 end)
 
 -- ════════════════════════════════════════════════════════

@@ -77,6 +77,7 @@ export default function App() {
 
   const [previewing,          setPreviewing]          = useState(false)
   const [previewCats,         setPreviewCats]         = useState([])
+  const [previewGender,       setPreviewGender]       = useState('male')
   const [capturing,           setCapturing]           = useState(false)
   const [capturePaused,       setCapturePaused]       = useState(false)
   const [overlayVisible,      setOverlayVisible]      = useState(true)
@@ -102,6 +103,7 @@ export default function App() {
           break
         case 'capturePreview':
           setPreviewCats(d.categories || [])
+          setPreviewGender(d.gender || 'male')
           setPreviewing(true)
           break
         case 'captureStart':
@@ -188,7 +190,7 @@ export default function App() {
     fetchNUI('cancelPreview')
   }, [])
 
-  const handlePreviewStart = useCallback((chosen) => {
+  const handlePreviewStart = useCallback((chosen, opts = {}) => {
     const sc = chosen.filter(c => c.type === 'component').map(c => c.id)
     const sp = chosen.filter(c => c.type === 'prop').map(c => c.id)
     const sl = chosen.filter(c => c.type === 'overlay').map(c => c.id)
@@ -198,7 +200,12 @@ export default function App() {
     const sv = vehEntry?.models || []
     const so = objEntry?.models || []
     setPreviewing(false)
-    fetchNUI('startCapture', { selectedComponents: sc, selectedProps: sp, selectedOverlays: sl, selectedVehicles: sv, selectedObjects: so })
+    fetchNUI('startCapture', { selectedComponents: sc, selectedProps: sp, selectedOverlays: sl, selectedVehicles: sv, selectedObjects: so, bothGenders: !!opts.bothGenders })
+  }, [])
+
+  const handlePreviewGenderChange = useCallback(async (g) => {
+    const r = await fetchNUI('setCaptureGender', { gender: g })
+    setPreviewGender(r?.gender || g)
   }, [])
 
   const handlePreviewActiveChange = useCallback((cat) => {
@@ -395,6 +402,8 @@ export default function App() {
             onActiveChange={handlePreviewActiveChange}
             onSaveAngle={handleSaveAngle}
             onColorChange={handleColorChange}
+            gender={previewGender}
+            onGenderChange={handlePreviewGenderChange}
           />
         </div>
         <OrbitHint />
