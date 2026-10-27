@@ -1,8 +1,19 @@
+<div align="center">
+
 # uz_AutoShot
 
-**All-in-one screenshot studio for FiveM. Captures clothing, props, vehicles, world objects, and appearance overlays with transparent backgrounds.**
+**All-in-one screenshot studio for FiveM. Captures clothing, props, tattoos, vehicles, world objects, and appearance overlays with transparent backgrounds.**
 
 Iterates every drawable and texture automatically, runs chroma key removal server-side, and serves the results in an in-game browser. No external tools needed.
+
+[![Release](https://img.shields.io/github/v/release/uz-scripts/uz_AutoShot?label=release&color=d63384)](https://github.com/uz-scripts/uz_AutoShot/releases/latest)
+[![License](https://img.shields.io/github/license/uz-scripts/uz_AutoShot?color=blue)](LICENSE)
+![Framework](https://img.shields.io/badge/framework-standalone-555)
+[![Discord](https://img.shields.io/badge/discord-join-5865F2?logo=discord&logoColor=white)](https://discord.uz-scripts.com)
+
+[Docs](https://uz-scripts.com/docs/free/uz-autoshot) · [Download](https://github.com/uz-scripts/uz_AutoShot/releases/latest) · [Report a bug](https://github.com/uz-scripts/uz_AutoShot/issues/new/choose) · [Discord](https://discord.uz-scripts.com)
+
+</div>
 
 <img src="uz-autoshot-preview.png" width="800" alt="uz_AutoShot Preview"/>
 
@@ -68,7 +79,7 @@ Type `/shotmaker`, pick what you want to capture, frame the orbit camera, hit St
 
 ## Install
 
-1. Drop the folder into `resources/`. The folder must be named exactly `uz_AutoShot` (case-sensitive on Linux). The resource will refuse to start with any other name.
+1. Download `uz_AutoShot.zip` from the [latest release](https://github.com/uz-scripts/uz_AutoShot/releases/latest) and extract it into `resources/`. The folder must be named exactly `uz_AutoShot` (case-sensitive on Linux). The resource will refuse to start with any other name.
 2. Add to `server.cfg` in this order:
 
    ```
@@ -297,9 +308,16 @@ uz_AutoShot/
 │   ├── server.js            # Chroma removal, resize, file write
 │   ├── config_bridge.lua    # Surfaces Customize fields to server.js as convars
 │   └── version.lua          # Folder-name guard + version check
-├── resources/build/         # Pre-built UI (React + Vite)
+├── resources/src/           # UI source (React + Vite)
+├── resources/build/         # Pre-built UI, loaded by FiveM
 └── shots/                   # Generated thumbnails (git-ignored)
 ```
+
+---
+
+## Contributing
+
+Bug reports, fixes and new capture categories are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and report security problems privately as described in [SECURITY.md](SECURITY.md). Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md). Changes per version are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

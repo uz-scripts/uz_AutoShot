@@ -1,0 +1,28 @@
+name: Feature request
+description: Suggest an improvement or support for another script
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Proposal
+      description: How you would like it to work. Config or export examples help.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Alternatives
+      description: Workarounds you use now, or other approaches you considered.
+
+  - type: checkboxes
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to open a pull request for this

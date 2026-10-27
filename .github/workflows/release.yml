@@ -1,0 +1,31 @@
+name: Release zip
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version
+        run: |
+          version=$(sed -nE "s/^version '([^']+)'.*/\1/p" fxmanifest.lua)
+          if [ "v$version" != "$TAG" ]; then
+            echo "fxmanifest.lua says $version but the release tag is $TAG"
+            exit 1
+          fi
+
+      - name: Zip
+        run: git archive --format=zip --prefix=uz_AutoShot/ -o uz_AutoShot.zip HEAD
+
+      - name: Upload
+        run: gh release upload "$TAG" uz_AutoShot.zip --clobber

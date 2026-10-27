@@ -1,0 +1,100 @@
+name: Bug report
+description: Something does not work as described in the README
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Setup questions go to [Discord](https://discord.uz-scripts.com). Security problems go through [SECURITY.md](https://github.com/uz-scripts/uz_AutoShot/blob/main/SECURITY.md), not here.
+
+  - type: checkboxes
+    attributes:
+      label: Before you open this
+      options:
+        - label: I am on the latest release
+          required: true
+        - label: The resource folder is named exactly `uz_AutoShot`
+          required: true
+        - label: I searched the existing issues and the Troubleshooting section of the README
+          required: true
+
+  - type: input
+    attributes:
+      label: uz_AutoShot version
+      description: "`version` in fxmanifest.lua"
+      placeholder: 2.3.0
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Server artifact build
+      placeholder: "12345"
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: Where does the server run?
+      description: Upload problems often only show up on a remote server.
+      options:
+        - Localhost (same PC as the game)
+        - Remote server (VPS, dedicated, hosting panel)
+    validations:
+      required: true
+
+  - type: input
+    attributes:
+      label: Screenshot and appearance resources
+      description: Screenshot resource and version, plus your appearance resource if the bug is about tattoos or the appearance restore.
+      placeholder: screenshot-basic (or screencapture), illenium-appearance 5.7.0
+    validations:
+      required: true
+
+  - type: dropdown
+    attributes:
+      label: What is affected
+      multiple: true
+      options:
+        - Clothing / props
+        - Appearance overlays
+        - Tattoos
+        - Vehicles
+        - Objects
+        - Wardrobe (/wardrobe)
+        - Saved files or exports
+        - Other
+
+  - type: textarea
+    attributes:
+      label: What happened
+      description: And what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. /shotmaker
+        2. Select Masks and Hats, press Start
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Logs
+      description: Every `[uz_AutoShot]` line from the server console and F8.
+      render: text
+
+  - type: textarea
+    attributes:
+      label: Config changes
+      description: Settings you changed in `Customize.lua`, for example `ScreenshotFormat`, `TransparentBg`, `ChromaKeyColor`, `LatentRate`.
+      render: lua
+
+  - type: textarea
+    attributes:
+      label: Screenshots
+      description: For a bad image, attach the file from `shots/` and a screenshot of the preview framing.

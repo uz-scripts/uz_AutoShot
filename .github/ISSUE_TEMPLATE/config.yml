@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Help and setup questions
+    url: https://discord.uz-scripts.com
+    about: Ask on Discord, the community and staff answer there.
+  - name: Documentation
+    url: https://uz-scripts.com/docs/free/uz-autoshot
+    about: Install steps, exports and every config option.
