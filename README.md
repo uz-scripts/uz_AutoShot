@@ -57,7 +57,7 @@ Iterates every drawable and texture automatically, runs chroma key removal serve
 - **Re-capture broken thumbnails**: select bad shots in the wardrobe, re-shoot only those without re-running the entire batch.
 - **Pause and resume**: long capture sessions can be paused mid-batch (default Space) and resumed without losing progress.
 - **Quick capture commands**: `/shotcar <model>` and `/shotprop <model>` skip the UI for one-off captures.
-- **Cross-resource integration**: server exports return `cfx-nui` photo URLs that any other resource's NUI can render with `<img src="...">`. No HTTP, no port forwarding, no base64.
+- **Cross-resource integration**: client exports return `cfx-nui` photo URLs that any other resource's NUI can render with `<img src="...">`. No HTTP, no port forwarding, no base64.
 - **Configurable head chroma mask**: stack multiple spheres on `SKEL_Head` to wipe the head out for accessory and torso shots without clipping the clothing.
 
 ---
