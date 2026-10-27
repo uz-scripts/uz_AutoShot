@@ -35,6 +35,7 @@ Iterates every drawable and texture automatically, runs chroma key removal serve
 - **Clothing components**: 11 ped slots (hair, mask, arms, pants, bags, shoes, accessories, undershirt, body armor, decals, tops) iterated by drawable and texture.
 - **Prop slots**: hats, glasses, ears, watches, bracelets. Watch and bracelet slots play a wrist-raise animation during capture.
 - **Head overlays**: 12 categories including facial hair, eyebrows, makeup, blemishes, ageing, blush, complexion, lipstick, moles, chest hair.
+- **Tattoos**: every tattoo in your `illenium-appearance` list (or your own list), grouped by body zone with a camera per zone. Torso tattoos are split into front and back using the game's tattoo shop data. Browse and re-capture them in the wardrobe.
 - **Vehicle capture**: auto-detects every loaded vehicle model and groups by class. Built-in primary / secondary color picker before each batch.
 - **Object capture**: configurable list of world props in `Customize.lua`. Edit the table or use a one-off command.
 - **Orbit camera**: rotate, roll, zoom, height, FOV. Save framing per category mid-session, copy current values to clipboard in Lua format.
@@ -137,6 +138,29 @@ The **Male / Female** toggle in the preview header swaps the studio ped model. P
 
 ---
 
+## Tattoos
+
+The **Tattoos** tab in the capture preview lists one category per body zone (`Customize.TattooCategories`), with the number of tattoos in each for the current gender. The tab only appears when a tattoo list is available:
+
+1. `Customize.Tattoos`, if you fill it in (same format as illenium-appearance's list), otherwise
+2. `customize/tattoos.lua` of `illenium-appearance`, read while that resource is running.
+
+Each tattoo is shot alone on a bare-skin ped (`Customize.TattooBody`: underwear, barefoot) with its zone's camera preset (`tattoo_torso`, `tattoo_back`, `tattoo_head`, `tattoo_left_arm`, ...). Frame each zone once in the preview and save the angle, as with clothing.
+
+Torso tattoos are split into **Torso (Front)** and **Torso (Back)** using the facing stored in the game's tattoo shop data. On first use F8 prints how many back-facing tattoos were found. Addon tattoos have no shop data and default to the front camera. If a tattoo lands in the wrong group, add it to `Customize.TattooFacing` and re-run that category:
+
+```lua
+Customize.TattooFacing = {
+    ['MP_Example_M_000'] = 'back',   -- overlay name from the list (hashMale / hashFemale)
+}
+```
+
+With `ChromaKeyColor = 'magenta'`, pink or purple ink can be keyed out with the background. Switch to `'green'` if your tattoo set has a lot of it.
+
+The wardrobe (`/wardrobe`) has a **Tattoos** tab too. Click a thumbnail to try the tattoo on your ped, or use re-capture mode to reshoot single tattoos that came out wrong.
+
+---
+
 ## Configuration
 
 All settings live in [`Customize.lua`](Customize.lua). Common knobs:
@@ -156,7 +180,7 @@ All settings live in [`Customize.lua`](Customize.lua). Common knobs:
 | `Customize.LatentRate` | `8000000` | Bytes/sec throttle per capture upload (the full-screen frame) |
 | `Customize.MaxPendingUploads` | `2` | Uploads in flight before the capture loop waits for the server |
 
-Camera presets, studio lighting, green screen dimensions, the head chroma mask (`Customize.HeadMask`), clothing/prop/overlay categories, and the object list are also configurable in the same file. Full reference at [uz-scripts.com/docs/free/uz-autoshot](https://uz-scripts.com/docs/free/uz-autoshot).
+Camera presets, studio lighting, green screen dimensions, the head chroma mask (`Customize.HeadMask`), clothing/prop/overlay/tattoo categories, the tattoo body outfit, and the object list are also configurable in the same file. Full reference at [uz-scripts.com/docs/free/uz-autoshot](https://uz-scripts.com/docs/free/uz-autoshot).
 
 ---
 
@@ -183,6 +207,9 @@ exports['uz_AutoShot']:getVehiclePhotoURL('adder')
 exports['uz_AutoShot']:getObjectPhotoURL('prop_bench_01a')
 -- 'https://cfx-nui-uz_AutoShot/shots/objects/prop_bench_01a.png'
 
+exports['uz_AutoShot']:getTattooURL('male', 'mpbeach_overlays', 'MP_Bea_M_Back_000')
+-- 'https://cfx-nui-uz_AutoShot/shots/male/tattoos/mpbeach_overlays/mp_bea_m_back_000.png'
+
 exports['uz_AutoShot']:getShotsBaseURL()
 -- 'https://cfx-nui-uz_AutoShot/shots'
 
@@ -197,6 +224,8 @@ exports['uz_AutoShot']:getPhotoFormat()
 - `id`: component id (1-11, see `Customize.Categories`), prop id (0, 1, 2, 6, 7), or overlay index (0-11)
 - `drawable`: drawable id
 - `texture`: texture id. Ignored for `'overlay'`. `0` (or `nil`) maps to `<drawable>.<ext>`, anything above to `<drawable>_<texture>.<ext>`, matching the files on disk (see Output folder). Textures above 0 only exist if you captured with `Customize.CaptureAllTextures = true`.
+
+`getTattooURL(gender, collection, overlay)` takes the collection and overlay name exactly as in the tattoo list (`collection`, `hashMale` / `hashFemale`). Tattoo files are stored lowercased, so the same URL works on Windows and Linux hosts.
 
 All exports return strings synchronously. No async, no callbacks.
 
@@ -219,9 +248,12 @@ shots/
 │   │   └── 5_2.png        # only when CaptureAllTextures = true
 │   ├── prop_0/            # Hats (propId 0)
 │   │   └── 0.png
-│   └── overlay_1/         # Facial Hair (overlayIndex 1)
-│       ├── 0.png
-│       └── 1.png
+│   ├── overlay_1/         # Facial Hair (overlayIndex 1)
+│   │   ├── 0.png
+│   │   └── 1.png
+│   └── tattoos/
+│       └── mpbeach_overlays/
+│           └── mp_bea_m_back_000.png   # <collection>/<overlay>, lowercased
 ├── female/
 │   └── ...
 ├── vehicles/

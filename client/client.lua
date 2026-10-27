@@ -1124,6 +1124,168 @@ local function CaptureOverlays(ped, gender, selectedSet)
 end
 
 -- ════════════════════════════════════════════════════════
+-- TATTOOS
+-- ════════════════════════════════════════════════════════
+
+-- Known torso tattoos. The shop data's eFacing enum isn't documented, so the
+-- value these carry is what "back" / "front" means.
+local TATTOO_BACK_ANCHORS  = { 'MP_Bea_M_Back_000', 'MP_Buis_M_Back_000' }
+local TATTOO_FRONT_ANCHORS = { 'MP_Bea_M_Chest_000', 'MP_Buis_M_Chest_000' }
+local TATTOO_VISIBLE       = { 0, 2 }  -- head + hair; the body comes from Customize.TattooBody
+
+local tattooList   = nil  -- { zone, collection, male, female }
+local tattooBacks  = nil  -- overlay hash -> true for back-facing shop tattoos
+local tattooGroups = {}   -- gender -> { [TattooCategories index] = { {collection, overlay}, ... } }
+
+-- One sTattooShopItemValues entry: 8 script fields of 8 bytes. A Lua string
+-- longer than 40 bytes is never interned, so the native can fill this one in place.
+local function ReadTattooShopItem(faction, index)
+    local buf = string.rep('\0', 64)
+    Citizen.InvokeNative(0xFF56381874F82086, faction, index, buf)
+    local preset = string.unpack('<i4', buf, 25)
+    local facing = string.unpack('<i4', buf, 41)
+    return preset, facing
+end
+
+local function LoadTattooBacks()
+    if tattooBacks then return tattooBacks end
+    local facings = {}
+    for _, faction in ipairs({ 3, 4 }) do  -- TATTOO_MP_FM, TATTOO_MP_FM_F
+        for i = 0, GetNumTattooShopDlcItems(faction) - 1 do
+            local preset, facing = ReadTattooShopItem(faction, i)
+            if preset ~= 0 then facings[preset] = facing end
+        end
+    end
+
+    local function anchorFacing(names)
+        for _, name in ipairs(names) do
+            local f = facings[GetHashKey(name)]
+            if f then return f end
+        end
+    end
+    local backValue, frontValue = anchorFacing(TATTOO_BACK_ANCHORS), anchorFacing(TATTOO_FRONT_ANCHORS)
+
+    tattooBacks = {}
+    if backValue and backValue ~= frontValue then
+        local backs = 0
+        for preset, facing in pairs(facings) do
+            if facing == backValue then
+                tattooBacks[preset] = true
+                backs = backs + 1
+            end
+        end
+        print(('^2[uz_AutoShot]^0 Tattoo shop data: %d back-facing tattoos found'):format(backs))
+    else
+        print('^3[uz_AutoShot]^0 Tattoo shop data has no usable facing info; torso tattoos all use the front camera. Add back tattoos to Customize.TattooFacing.')
+    end
+    return tattooBacks
+end
+
+local function LoadTattooList()
+    if tattooList then return tattooList end
+    local source = Customize.Tattoos
+    if type(source) ~= 'table' or next(source) == nil then
+        source = nil
+        if GetResourceState('illenium-appearance') == 'started' then
+            local code = LoadResourceFile('illenium-appearance', 'customize/tattoos.lua')
+            -- A plain data file: run it against a throwaway table, never our globals
+            local env = { Customize = {} }
+            local chunk = code and load(code, '@illenium-appearance/customize/tattoos.lua', 't', env)
+            if chunk and pcall(chunk) then source = env.Customize.Tattoos end
+        end
+    end
+
+    local list = {}
+    for zone, entries in pairs(type(source) == 'table' and source or {}) do
+        for _, t in ipairs(entries) do
+            if type(t.collection) == 'string' then
+                list[#list + 1] = { zone = t.zone or zone, collection = t.collection, male = t.hashMale, female = t.hashFemale }
+            end
+        end
+    end
+    -- Don't cache an empty result: the appearance resource may just not be up yet
+    if #list > 0 then tattooList = list end
+    return list
+end
+
+-- Tattoos per Customize.TattooCategories index for one gender
+local function GetTattooGroups(gender)
+    if tattooGroups[gender] then return tattooGroups[gender] end
+    local cats = Customize.TattooCategories or {}
+    local list = LoadTattooList()
+    local backs = #list > 0 and LoadTattooBacks() or {}
+    local forced = {}
+    for name, facing in pairs(Customize.TattooFacing or {}) do forced[name:lower()] = facing end
+
+    local groups = {}
+    for i in ipairs(cats) do groups[i] = {} end
+    for _, t in ipairs(list) do
+        local overlay = gender == 'female' and t.female or t.male
+        if type(overlay) == 'string' and overlay ~= '' then
+            local facing = forced[overlay:lower()] or (backs[GetHashKey(overlay)] and 'back' or 'front')
+            for i, cat in ipairs(cats) do
+                if cat.zone == t.zone and (not cat.facing or cat.facing == facing) then
+                    groups[i][#groups[i] + 1] = { collection = t.collection, overlay = overlay }
+                    break
+                end
+            end
+        end
+    end
+    if #list > 0 then tattooGroups[gender] = groups end
+    return groups
+end
+
+-- Lowercased so one URL works on case-sensitive hosts whatever casing the
+-- list uses ("mpHipster_overlays" and "mphipster_overlays" both appear).
+local function TattooFilename(gender, collection, overlay)
+    return ('%s/tattoos/%s/%s'):format(gender, collection:lower(), overlay:lower())
+end
+
+local function ApplyTattoo(ped, tattoo)
+    ClearPedDecorations(ped)
+    if tattoo then AddPedDecorationFromHashes(ped, GetHashKey(tattoo.collection), GetHashKey(tattoo.overlay)) end
+end
+
+local function CaptureTattoos(ped, gender, selectedSet)
+    local cats = Customize.TattooCategories or {}
+    local totalItems, captured = 0, 0
+    local groups = next(selectedSet) and GetTattooGroups(gender) or {}
+
+    for i in ipairs(cats) do
+        if selectedSet[i] and groups[i] then totalItems = totalItems + #groups[i] end
+    end
+
+    for i, cat in ipairs(cats) do
+        if isCancelled then return end
+        if not selectedSet[i] or not groups[i] or #groups[i] == 0 then goto nextTattooCat end
+
+        ResetPedForCategory(ped, TATTOO_VISIBLE, (Customize.TattooBody or {})[gender])
+        hideHeadActive = false
+        local preset, hasSaved = SetupCategoryCamera(ped, cat.camera)
+
+        for _, tattoo in ipairs(groups[i]) do
+            if isCancelled then return end
+            WaitForResume()
+            if isCancelled then return end
+
+            ApplyTattoo(ped, tattoo)
+            ReapplyRotation(ped, preset, hasSaved)
+            Wait(Customize.WaitAfterApply)
+
+            CaptureAndUpload(TattooFilename(gender, tattoo.collection, tattoo.overlay))
+
+            captured = captured + 1
+            SendProgress(captured, totalItems, cat.label)
+            Wait(Customize.WaitAfterCapture)
+            ThrottledWait()
+        end
+
+        ClearPedDecorations(ped)
+        ::nextTattooCat::
+    end
+end
+
+-- ════════════════════════════════════════════════════════
 -- VEHICLE CAPTURE LOOP
 -- ════════════════════════════════════════════════════════
 
@@ -1268,6 +1430,13 @@ local function RecaptureSpecificItems(items)
         visibilityMap[key] = cat.visibleComponents
         hideHeadMap[key]   = false
     end
+    for i, cat in ipairs(Customize.TattooCategories or {}) do
+        local key = 'tattoo_' .. i
+        cameraMap[key]     = cat.camera
+        visibilityMap[key] = TATTOO_VISIBLE
+        overridesMap[key]  = (Customize.TattooBody or {})[captureGender]
+        hideHeadMap[key]   = false
+    end
 
     local total = #items
     local model = pedAppearance.model or GetEntityModel(PlayerPedId())
@@ -1299,8 +1468,14 @@ local function RecaptureSpecificItems(items)
         local visParts    = visibilityMap[itemKey]
         local animConfig  = animMap[itemKey]
 
+        -- A tattoo item's drawable is its index in the zone list
+        local tattoo = item.type == 'tattoo' and (GetTattooGroups(captureGender)[item.id] or {})[item.drawable + 1] or nil
+        if item.type == 'tattoo' and not tattoo then goto nextRecaptureItem end
+
         ResetPedForCategory(ped, visParts, overridesMap[itemKey])
         hideHeadActive = hideHeadMap[itemKey] or false
+        -- Never leave the previous item's tattoo on a clothing shot
+        ClearPedDecorations(ped)
 
         local cameraKey = cameraMap[itemKey] or 'torso'
         local preset    = Customize.CameraPresets[cameraKey]
@@ -1325,6 +1500,8 @@ local function RecaptureSpecificItems(items)
         if item.type == 'overlay' then
             for i = 0, 12 do SetPedHeadOverlay(ped, i, 255, 1.0) end
             ApplyOverlayWithColor(ped, item.id, item.drawable)
+        elseif item.type == 'tattoo' then
+            ApplyTattoo(ped, tattoo)
         elseif item.type == 'component' then
             WaitForClothingLoaded(ped, item.id, item.drawable, item.texture)
         else
@@ -1337,6 +1514,8 @@ local function RecaptureSpecificItems(items)
         local filename
         if item.type == 'overlay' then
             filename = ('%s/overlay_%d/%d'):format(captureGender, item.id, item.drawable)
+        elseif item.type == 'tattoo' then
+            filename = TattooFilename(captureGender, tattoo.collection, tattoo.overlay)
         elseif item.type == 'component' then
             filename = item.texture > 0
                 and ('%s/%d/%d_%d'):format(captureGender, item.id, item.drawable, item.texture)
@@ -1349,9 +1528,12 @@ local function RecaptureSpecificItems(items)
 
         CaptureAndUpload(filename)
         captured = captured + 1
-        SendProgress(captured, total, item.type == 'component' and tostring(item.id) or ('prop_' .. item.id))
+        SendProgress(captured, total, item.type == 'component' and tostring(item.id)
+            or item.type == 'tattoo' and tattoo.overlay
+            or (item.type .. '_' .. item.id))
         Wait(Customize.WaitAfterCapture)
         ThrottledWait()
+        ::nextRecaptureItem::
     end
 
     -- Let in-flight uploads land so "complete" means the files are on disk
@@ -1366,7 +1548,9 @@ end
 -- CAPTURE PREVIEW + RUN
 -- ════════════════════════════════════════════════════════
 
-local function BuildCategoryList(includeDrawables)
+-- includeDrawables: wardrobe, which also needs each tattoo zone's list to
+-- build thumbnails; an item's drawable is its index in that list
+local function BuildCategoryList(includeDrawables, includeTattoos)
     local categories = {}
     for _, cat in ipairs(Customize.Categories) do
         local entry = { type = 'component', id = cat.componentId, label = cat.label, camera = cat.camera }
@@ -1382,6 +1566,17 @@ local function BuildCategoryList(includeDrawables)
         local entry = { type = 'overlay', id = cat.overlayIndex, label = cat.label, camera = cat.camera }
         if includeDrawables then entry.drawables = GetPedHeadOverlayNum(cat.overlayIndex) end
         categories[#categories + 1] = entry
+    end
+    if includeTattoos and #LoadTattooList() > 0 then
+        local groups = GetTattooGroups(captureGender)
+        for i, cat in ipairs(Customize.TattooCategories or {}) do
+            local entry = { type = 'tattoo', id = i, label = cat.label, camera = cat.camera, count = #groups[i] }
+            if includeDrawables then
+                entry.drawables = #groups[i]
+                entry.tattoos   = groups[i]
+            end
+            categories[#categories + 1] = entry
+        end
     end
     -- Group vehicles by class
     local vehCats = GetVehicleCategories()
@@ -1432,7 +1627,7 @@ local function EnterCapturePreview()
     -- (story/addon ped) starts the studio on the male one
     ped = SetupCapturePed(GetHashKey(GENDER_MODELS[captureGender]))
 
-    local categories = BuildCategoryList(false)
+    local categories = BuildCategoryList(false, true)
     CreateOrbitCamera(ped, categories[1] and categories[1].camera or 'torso')
 
     SendNUIMessage({ type = 'capturePreview', categories = categories, gender = captureGender })
@@ -1461,7 +1656,7 @@ local function SetupEntityCapturePhase(mode)
     Wait(200)
 end
 
-local function RunCapture(selectedComponents, selectedProps, selectedVehicles, selectedObjects, selectedOverlays, bothGenders)
+local function RunCapture(selectedComponents, selectedProps, selectedVehicles, selectedObjects, selectedOverlays, bothGenders, selectedTattoos)
     -- The category on screen when Start was pressed is captured exactly as
     -- previewed even without "save angle"; every other unsaved category
     -- falls back to its own preset in CreateCaptureCamera.
@@ -1483,14 +1678,15 @@ local function RunCapture(selectedComponents, selectedProps, selectedVehicles, s
     for _, id in ipairs(selectedComponents) do compSet[id] = true end
     for _, id in ipairs(selectedProps) do propSet[id] = true end
 
-    local overlaySet = {}
+    local overlaySet, tattooSet = {}, {}
     for _, id in ipairs(selectedOverlays or {}) do overlaySet[id] = true end
+    for _, id in ipairs(selectedTattoos or {}) do tattooSet[id] = true end
 
     local vehSet, objSet = {}, {}
     for _, id in ipairs(selectedVehicles or {}) do vehSet[id] = true end
     for _, id in ipairs(selectedObjects or {}) do objSet[id] = true end
 
-    local hasPed = next(compSet) or next(propSet) or next(overlaySet)
+    local hasPed = next(compSet) or next(propSet) or next(overlaySet) or next(tattooSet)
     local hasVeh = next(vehSet)
     local hasObj = next(objSet)
 
@@ -1498,7 +1694,7 @@ local function RunCapture(selectedComponents, selectedProps, selectedVehicles, s
     SetNuiFocus(false, false)
     Wait(300)
 
-    -- ── Phase 1: Clothing + Ped Props + Overlays (previewed gender first) ──
+    -- ── Phase 1: Clothing + Ped Props + Overlays + Tattoos (previewed gender first) ──
     if hasPed and not isCancelled then
         local genders = { captureGender }
         if bothGenders then genders[2] = OtherGender(captureGender) end
@@ -1517,6 +1713,7 @@ local function RunCapture(selectedComponents, selectedProps, selectedVehicles, s
             CaptureComponents(ped, captureGender, compSet)
             if not isCancelled then CaptureProps(ped, captureGender, propSet) end
             if not isCancelled then CaptureOverlays(ped, captureGender, overlaySet) end
+            if not isCancelled then CaptureTattoos(ped, captureGender, tattooSet) end
         end
     end
 
@@ -1696,7 +1893,7 @@ local function OpenClothingMenu()
 
     ped = SetupCapturePed(pedAppearance.model)
 
-    local categories = BuildCategoryList(true)
+    local categories = BuildCategoryList(true, true)
     CreateOrbitCamera(ped, categories[1] and categories[1].camera or 'torso')
     SetNuiFocus(true, true)
 
@@ -1715,7 +1912,7 @@ end
 RegisterNUICallback('startCapture', function(data, cb)
     cb('ok')
     if not isPreview then return end
-    CreateThread(function() RunCapture(data.selectedComponents or {}, data.selectedProps or {}, data.selectedVehicles or {}, data.selectedObjects or {}, data.selectedOverlays or {}, data.bothGenders == true) end)
+    CreateThread(function() RunCapture(data.selectedComponents or {}, data.selectedProps or {}, data.selectedVehicles or {}, data.selectedObjects or {}, data.selectedOverlays or {}, data.bothGenders == true, data.selectedTattoos or {}) end)
 end)
 
 -- Swap the studio ped between the freemode models during preview
@@ -1731,7 +1928,10 @@ RegisterNUICallback('setCaptureGender', function(data, cb)
         -- SetPlayerModel makes the new ped visible; keep it hidden behind a vehicle/object preview
         if captureMode ~= 'clothing' then SetEntityVisible(ped, false, false) end
     end
-    cb({ gender = captureGender })
+    -- Some tattoos exist for one gender only, so the per-category counts change
+    local tattooCounts = {}
+    for i, group in ipairs(GetTattooGroups(captureGender)) do tattooCounts[i] = #group end
+    cb({ gender = captureGender, tattooCounts = tattooCounts })
 end)
 
 RegisterNUICallback('cancelPreview', function(_, cb)
@@ -1772,6 +1972,9 @@ RegisterNUICallback('applyClothing', function(data, cb)
         -- Clear all overlays, then apply selected one with correct color
         for i = 0, 12 do SetPedHeadOverlay(ped, i, 255, 1.0) end
         ApplyOverlayWithColor(ped, data.id, data.drawable)
+    elseif data.itemType == 'tattoo' then
+        local group = GetTattooGroups(captureGender)[data.id]
+        ApplyTattoo(ped, group and group[data.drawable + 1])
     elseif data.itemType == 'vehicle' and data.model then
         entitySpawnToken = entitySpawnToken + 1
         local myToken = entitySpawnToken
@@ -1901,6 +2104,9 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
                         break
                     end
                 end
+            elseif data.categoryType == 'tattoo' then
+                visComps = TATTOO_VISIBLE
+                compOverrides = (Customize.TattooBody or {})[captureGender]
             else
                 for _, cat in ipairs(Customize.PropCategories) do
                     if cat.propId == data.categoryId then
@@ -1915,12 +2121,16 @@ RegisterNUICallback('setCameraPreset', function(data, cb)
 
             hideHeadActive = shouldHideHead
             ResetPedForCategory(ped, visComps, compOverrides)
-            -- Always clear overlays when switching categories
+            -- Always clear overlays and tattoos when switching categories
             for i = 0, 12 do SetPedHeadOverlay(ped, i, 255, 1.0) end
+            ClearPedDecorations(ped)
 
             if data.categoryType == 'overlay' then
                 -- Show first variation as preview with correct color
                 ApplyOverlayWithColor(ped, data.categoryId, 0)
+            elseif data.categoryType == 'tattoo' then
+                local group = GetTattooGroups(captureGender)[data.categoryId]
+                ApplyTattoo(ped, group and group[1])
             elseif data.categoryType == 'component' then
                 SetPedComponentVariation(ped, data.categoryId, previewDraw, 0, 0)
             else
@@ -2104,6 +2314,7 @@ RegisterNUICallback('recaptureItems', function(data, cb)
     for _, cat in ipairs(Customize.Categories) do cameraMap['component_' .. cat.componentId] = cat.camera end
     for _, cat in ipairs(Customize.PropCategories) do cameraMap['prop_' .. cat.propId] = cat.camera end
     for _, cat in ipairs(Customize.OverlayCategories or {}) do cameraMap['overlay_' .. cat.overlayIndex] = cat.camera end
+    for i, cat in ipairs(Customize.TattooCategories or {}) do cameraMap['tattoo_' .. i] = cat.camera end
 
     savedCameraAngles = {}
     if orbitCam then
@@ -2318,6 +2529,11 @@ end)
 
 exports('getObjectPhotoURL', function(modelName)
     return ('https://cfx-nui-uz_AutoShot/shots/objects/%s.%s'):format(modelName, SavedImageExt())
+end)
+
+-- collection / overlay as in the tattoo list, e.g. 'mpbeach_overlays', 'MP_Bea_M_Back_000'
+exports('getTattooURL', function(gender, collection, overlay)
+    return ('https://cfx-nui-uz_AutoShot/shots/%s.%s'):format(TattooFilename(gender, collection, overlay), SavedImageExt())
 end)
 
 -- ════════════════════════════════════════════════════════

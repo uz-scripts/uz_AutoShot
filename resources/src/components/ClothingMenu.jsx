@@ -28,9 +28,11 @@ const Thumbnail = React.memo(({ item, isSelected, onClick, ext, recaptureMode, r
   const thumbName = item.type === 'vehicle' ? `vehicles/${item.model || item.id}.${ext}`
     : item.type === 'object' ? `objects/${item.model || item.id}.${ext}`
     : item.type === 'overlay' ? `${item.gender}/overlay_${item.id}/${item.drawable}.${ext}`
+    : item.type === 'tattoo' ? `${item.gender}/tattoos/${item.collection.toLowerCase()}/${item.overlay.toLowerCase()}.${ext}`
     : item.type === 'prop' ? `${item.gender}/prop_${item.id}/${item.drawable}${texSuffix}.${ext}`
     : `${item.gender}/${item.id}/${item.drawable}${texSuffix}.${ext}`
-  const displayLabel = item.model || `#${item.drawable}`
+  const displayLabel = item.model || item.overlay || `#${item.drawable}`
+  const longLabel = !!(item.model || item.overlay)
 
   useEffect(() => {
     let c = false; setSrc(null); setError(false)
@@ -52,14 +54,14 @@ const Thumbnail = React.memo(({ item, isSelected, onClick, ext, recaptureMode, r
           onMouseOver={e => e.currentTarget.style.transform = 'scale(1.06)'} onMouseOut={e => e.currentTarget.style.transform = 'scale(1)'} />}
         <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.55)', opacity: 0, pointerEvents: 'none', transition: 'opacity 0.1s' }}
           ref={el => { if (!el) return; const p = el.parentElement?.parentElement; if (!p) return; p.onmouseenter = () => el.style.opacity = '1'; p.onmouseleave = () => el.style.opacity = '0' }}>
-          <span style={{ fontSize: item.model ? 7 : 9, fontWeight: 700, color: '#fff' }}>{displayLabel}</span>
+          <span style={{ fontSize: longLabel ? 7 : 9, fontWeight: 700, color: '#fff' }}>{displayLabel}</span>
         </div>
         {recaptureSelected && <div style={{ position: 'absolute', top: 3, right: 3, width: 13, height: 13, borderRadius: '50%', background: '#fb923c', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><RotateCcw style={{ width: 6, height: 6, color: '#000' }} strokeWidth={3} /></div>}
         {!recaptureMode && isSelected && <div style={{ position: 'absolute', top: 3, right: 3, width: 13, height: 13, borderRadius: '50%', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Check style={{ width: 7, height: 7, color: '#000' }} strokeWidth={3} /></div>}
         {item.texture > 0 && <span style={{ position: 'absolute', top: 3, left: 3, fontSize: 7, fontWeight: 700, color: '#777', background: 'rgba(0,0,0,0.65)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: 2, padding: '0 3px' }}>T{item.texture}</span>}
       </div>
       <div style={{ height: 16, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderTop: '1px solid rgba(255,255,255,0.025)', background: 'rgba(0,0,0,0.2)' }}>
-        <span style={{ fontSize: item.model ? 6 : 7, fontWeight: active ? 700 : 500, color: active ? '#ccc' : '#444' }} className="truncate" title={displayLabel}>{displayLabel}</span>
+        <span style={{ fontSize: longLabel ? 6 : 7, fontWeight: active ? 700 : 500, color: active ? '#ccc' : '#444' }} className="truncate" title={displayLabel}>{displayLabel}</span>
       </div>
     </div>
   )
@@ -136,6 +138,7 @@ export function ClothingMenu({
   const catSubtitle = activeCat?.type === 'vehicle' ? activeCat?.id
     : activeCat?.type === 'object' ? activeCat?.id
     : activeCat?.type === 'overlay' ? `Overlay · ID ${activeCat?.id}`
+    : activeCat?.type === 'tattoo' ? 'Tattoo zone'
     : activeCat?.type === 'prop' ? `Prop · ID ${activeCat?.id}` : `Component · ID ${activeCat?.id}`
 
   const ItemIcon = CAT_ICON_MAP[activeCat?.label] ?? CAT_TYPE_ICON[activeCat?.type] ?? Shirt
@@ -239,7 +242,7 @@ export function ClothingMenu({
             <span style={{ width: 4, height: 4, borderRadius: '50%', flexShrink: 0, background: '#22c55e', boxShadow: '0 0 6px rgba(34,197,94,0.4)' }} />
             <span style={{ fontSize: 9, fontWeight: 500, color: '#888', flex: 1 }} className="truncate">{selectedItem.model || selectedItem.label}</span>
             <span style={{ fontSize: 8, color: '#555', fontFamily: 'monospace', background: bg(0.03), border: border(0.04), borderRadius: 3, padding: '1px 5px' }}>
-              {selectedItem.model || `#${selectedItem.drawable}`}
+              {selectedItem.model || selectedItem.collection || `#${selectedItem.drawable}`}
             </span>
           </div>
         ) : (

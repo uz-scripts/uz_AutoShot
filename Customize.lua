@@ -94,6 +94,13 @@ Customize.CameraPresets = {
     bracelets       = { fov = 21.7, zPos = -0.19, rotation = vector3(0.0, 0.0, 0.0),   dist = 1.0, defaultAngleH = -275.6, defaultCamZ = 0.5,  defaultRoll = 0.0 },
     vehicle         = { fov = 40.0, zPos = 0.81,  rotation = vector3(0.0, 0.0, 0.0),   dist = 8.0, defaultAngleH = 399.4,  defaultCamZ = 1.82, defaultRoll = 0.0 },
     object          = { fov = 35.0, zPos = 0.42,  rotation = vector3(0.0, 0.0, 0.0),   dist = 3.7, defaultAngleH = 211.8,  defaultCamZ = 0.83, defaultRoll = 0.0 },
+    tattoo_torso     = { fov = 36.0, zPos = 0.25,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.4, defaultAngleH = 180.0,  defaultCamZ = 0.0,  defaultRoll = 0.0 },
+    tattoo_back      = { fov = 36.0, zPos = 0.25,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.4, defaultAngleH = 0.0,    defaultCamZ = 0.0,  defaultRoll = 0.0 },
+    tattoo_head      = { fov = 22.0, zPos = 0.64,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.2, defaultAngleH = 180.0,  defaultCamZ = 0.0,  defaultRoll = 0.0 },
+    tattoo_left_arm  = { fov = 40.0, zPos = 0.15,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.3, defaultAngleH = 275.0,  defaultCamZ = 0.0,  defaultRoll = 0.0 },
+    tattoo_right_arm = { fov = 40.0, zPos = 0.15,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.3, defaultAngleH = 85.0,   defaultCamZ = 0.0,  defaultRoll = 0.0 },
+    tattoo_left_leg  = { fov = 45.0, zPos = -0.5,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.4, defaultAngleH = 225.0,  defaultCamZ = 0.0,  defaultRoll = 0.0 },
+    tattoo_right_leg = { fov = 45.0, zPos = -0.5,  rotation = vector3(0.0, 0.0, 0.0),  dist = 1.4, defaultAngleH = 135.0,  defaultCamZ = 0.0,  defaultRoll = 0.0 },
 }
 
 -- Clothing Categories (componentId -> camera preset)
@@ -145,6 +152,45 @@ Customize.OverlayCategories = {
     { overlayIndex = 10, label = 'Chest Hair',         camera = 'chest_overlay', visibleComponents = {0, 2, 3}, componentOverrides = {[3] = 15}, colorType = 1, colorId = 1 },
     { overlayIndex = 11, label = 'Body Blemishes',     camera = 'chest_overlay', visibleComponents = {0, 2, 3}, componentOverrides = {[3] = 15}, colorType = 1, colorId = 1 },
 }
+
+-- Tattoo Categories (zone -> camera preset)
+-- The tattoo list comes from Customize.Tattoos when you fill it, otherwise from
+-- illenium-appearance's customize/tattoos.lua while that resource is running.
+-- zone  : tattoo zone as written in the list (ZONE_TORSO, ZONE_HEAD, ZONE_LEFT_ARM,
+--         ZONE_RIGHT_ARM, ZONE_LEFT_LEG, ZONE_RIGHT_LEG, ZONE_HAIR)
+-- facing: optional 'front' | 'back'. Read from the game's tattoo shop data, which
+--         only covers base game / DLC tattoos; anything else counts as 'front'.
+--         A tattoo goes to the first category whose zone and facing match.
+Customize.TattooCategories = {
+    { zone = 'ZONE_TORSO',     facing = 'front', label = 'Torso (Front)', camera = 'tattoo_torso' },
+    { zone = 'ZONE_TORSO',     facing = 'back',  label = 'Torso (Back)',  camera = 'tattoo_back' },
+    { zone = 'ZONE_HEAD',      label = 'Head',       camera = 'tattoo_head' },
+    { zone = 'ZONE_LEFT_ARM',  label = 'Left Arm',   camera = 'tattoo_left_arm' },
+    { zone = 'ZONE_RIGHT_ARM', label = 'Right Arm',  camera = 'tattoo_right_arm' },
+    { zone = 'ZONE_LEFT_LEG',  label = 'Left Leg',   camera = 'tattoo_left_leg' },
+    { zone = 'ZONE_RIGHT_LEG', label = 'Right Leg',  camera = 'tattoo_right_leg' },
+    { zone = 'ZONE_HAIR',      label = 'Hair Fades', camera = 'hair' },
+}
+
+-- Bare-skin outfit worn for tattoo shots (componentId -> drawable): underwear
+-- and barefoot. Every other component except head and hair is hidden.
+Customize.TattooBody = {
+    male   = { [3] = 15, [4] = 61, [6] = 34, [8] = 15, [11] = 15 },
+    female = { [3] = 15, [4] = 15, [6] = 35, [8] = 14, [11] = 15 },
+}
+
+-- Force a tattoo to the front or back camera when the shop data is wrong or
+-- missing (addon tattoos have none). Key: overlay name (hashMale / hashFemale).
+Customize.TattooFacing = {
+    -- ['MP_Bea_M_Back_000'] = 'back',
+}
+
+-- Optional tattoo list, same format as illenium-appearance's Customize.Tattoos:
+-- Customize.Tattoos = {
+--     ZONE_TORSO = {
+--         { label = 'Turbulence', collection = 'mpairraces_overlays', hashMale = 'MP_Airraces_Tattoo_000_M', hashFemale = 'MP_Airraces_Tattoo_000_F' },
+--     },
+-- }
 
 -- Vehicle Categories
 -- 'auto' = auto-detect all loaded vehicle models via GetAllVehicleModels()
